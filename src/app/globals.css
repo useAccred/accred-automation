@@ -1,26 +1,233 @@
 @import "tailwindcss";
 
+/* Tokens mirror accred.sh: warm near-black surfaces, one blue accent, hairline borders. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: hsl(30 4% 6.5%);
+  --foreground: hsl(40 10% 94%);
+  --card: hsl(30 4% 8%);
+  --raised: hsl(30 4% 11%);
+  --muted-foreground: hsl(35 5% 58%);
+  --faint-foreground: hsl(35 4% 42%);
+  --primary: hsl(224 83% 51%);
+  --primary-soft: hsl(224 95% 70%);
+  --border: hsl(40 10% 94% / 0.09);
+  --border-strong: hsl(40 10% 94% / 0.16);
+  --danger: hsl(0 70% 64%);
+  --success: hsl(152 52% 56%);
+  --warning: hsl(38 88% 62%);
+  color-scheme: dark;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-raised: var(--raised);
+  --color-muted: var(--muted-foreground);
+  --color-faint: var(--faint-foreground);
+  --color-primary: var(--primary);
+  --color-primary-soft: var(--primary-soft);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  background: var(--background);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  letter-spacing: -0.006em;
+}
+
+::selection {
+  background: hsl(224 83% 51% / 0.45);
+}
+
+*:focus-visible {
+  outline: 2px solid hsl(224 83% 58%);
+  outline-offset: 2px;
+}
+
+@layer components {
+  /* Small mono label used for section numbers, statuses and units. */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    line-height: 1rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    height: 2.25rem;
+    padding: 0 1rem;
+    border-radius: 9999px;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+    cursor: pointer;
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn-lg {
+    height: 2.625rem;
+    padding: 0 1.25rem;
+    font-size: 0.875rem;
+  }
+  .btn-sm {
+    height: 1.875rem;
+    padding: 0 0.75rem;
+    font-size: 0.75rem;
+  }
+  /* The site's main call to action is a white pill. */
+  .btn-primary {
+    background: var(--foreground);
+    color: var(--background);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: hsl(40 10% 100%);
+  }
+  .btn-blue {
+    background: var(--primary);
+    color: hsl(0 0% 98%);
+  }
+  .btn-blue:hover:not(:disabled) {
+    background: hsl(224 83% 57%);
+  }
+  .btn-secondary {
+    background: transparent;
+    color: var(--foreground);
+    border-color: var(--border-strong);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--raised);
+  }
+  .btn-danger {
+    background: transparent;
+    color: var(--danger);
+    border-color: hsl(0 70% 64% / 0.35);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: hsl(0 70% 64% / 0.1);
+  }
+
+  .label {
+    display: block;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    margin-bottom: 0.375rem;
+  }
+  .hint {
+    font-size: 0.75rem;
+    line-height: 1.125rem;
+    color: var(--muted-foreground);
+    margin-top: 0.375rem;
+  }
+  .input {
+    width: 100%;
+    min-height: 2.375rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--background);
+    color: var(--foreground);
+    border: 1px solid hsl(40 10% 94% / 0.12);
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    transition: border-color 0.15s;
+  }
+  .input::placeholder {
+    color: var(--faint-foreground);
+  }
+  .input:hover {
+    border-color: hsl(40 10% 94% / 0.2);
+  }
+  .input:focus {
+    outline: none;
+    border-color: hsl(224 83% 58%);
+    box-shadow: 0 0 0 3px hsl(224 83% 51% / 0.2);
+  }
+  textarea.input {
+    line-height: 1.5;
+    resize: vertical;
+  }
+  select.input {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    padding-right: 2rem;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    height: 1.375rem;
+    padding: 0 0.5rem;
+    border-radius: 9999px;
+    border: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.04em;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+  }
+  .dot {
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: 9999px;
+    background: currentColor;
+    flex: none;
+  }
+
+  /* Soft blue light behind the top of a page, as on the Accred site. */
+  .glow {
+    position: relative;
+    isolation: isolate;
+  }
+  .glow::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 34rem;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(40rem 22rem at 78% -8%, hsl(224 83% 51% / 0.22), transparent 70%),
+      radial-gradient(28rem 16rem at 8% -12%, hsl(224 83% 51% / 0.12), transparent 70%);
+  }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.pulse {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse { animation: none; }
 }
