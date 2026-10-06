@@ -71,7 +71,7 @@ Sign in with the key the mock prints. Its "model" follows a fixed script: read a
 
 The scheduler runs inside the server process and runs continue after the request that started them, so deploy this as a **long-running Node server** (`pnpm build && pnpm start`), not as serverless functions.
 
-**Render:** `render.yaml` describes the web service and its Postgres database. Open `https://render.com/deploy?repo=https://github.com/useAccred/accred-automation`, apply the blueprint, then add `TELEGRAM_BOT_TOKEN`, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` under Environment. Tables are created by `pnpm db:migrate` on every start. The blueprint uses free plans, and a free web service sleeps when idle: while asleep no schedule fires and the Telegram bot is not heard, so move to a paid instance for real use.
+**Render:** `render.yaml` describes the web service. Create it from the blueprint or with the Render CLI, set `DATABASE_URL` to a Postgres connection string, then add `TELEGRAM_BOT_TOKEN`, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` under Environment. Tables are created by `pnpm db:migrate` on every start. Use an always-on paid instance: a free web service sleeps when idle, and while asleep no schedule fires and the Telegram bot is not heard.
 
 - Set `DATABASE_URL`, `APP_SECRET`, `CRON_SECRET` and `APP_URL=https://automation.accred.sh`.
 - Point the `automation` DNS record at the host.
