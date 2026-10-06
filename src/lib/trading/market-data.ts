@@ -1,7 +1,8 @@
 /**
  * Market data for Robinhood Chain. Prices, liquidity and volume come from
- * DexScreener; the list of assets offered in the form comes from GeckoTerminal.
- * Both are public APIs that need no key.
+ * DexScreener, or from GeckoTerminal when DexScreener cannot be reached; the
+ * list of assets offered in the form comes from GeckoTerminal. Both are public
+ * APIs that need no key.
  */
 
 export interface MarketSnapshot {
@@ -27,7 +28,7 @@ export interface MarketSnapshot {
   dex: string;
   quoteSymbol: string;
   fetchedAt: number;
-  source: "dexscreener";
+  source: "dexscreener" | "geckoterminal";
 }
 
 export class MarketDataError extends Error {}
@@ -37,6 +38,8 @@ const DEXSCREENER = "https://api.dexscreener.com";
 const GECKOTERMINAL = "https://api.geckoterminal.com/api/v2";
 const BATCH = 30;
 const CACHE_MS = 10_000;
+/** After DexScreener fails, it is left alone for this long, so each request does not wait on it again. */
+const PRIMARY_REST_MS = 60_000;
 
 /** Names and symbols are written by whoever deployed the token. Keep only harmless characters. */
 export function cleanSymbol(value: unknown, max = 16): string {
@@ -107,6 +110,79 @@ export function snapshotsFromPairs(pairs: unknown, fetchedAt: number): Map<strin
   return best;
 }
 
+interface GeckoToken {
+  attributes?: { address?: string; symbol?: string; name?: string; price_usd?: string; market_cap_usd?: string; fdv_usd?: string };
+  relationships?: { top_pools?: { data?: Array<{ id?: string }> } };
+}
+
+interface GeckoPool {
+  id?: string;
+  attributes?: {
+    address?: string;
+    name?: string;
+    pool_created_at?: string;
+    reserve_in_usd?: string;
+    volume_usd?: { h1?: string; h6?: string; h24?: string };
+    price_change_percentage?: { m5?: string; h1?: string; h6?: string; h24?: string };
+    transactions?: { h1?: { buys?: number; sells?: number } };
+  };
+  relationships?: { base_token?: { data?: { id?: string } }; dex?: { data?: { id?: string } } };
+}
+
+/**
+ * Turns a GeckoTerminal token reply, with each token's top pools included, into
+ * one snapshot per token, taken from its deepest pool. GeckoTerminal counts a
+ * pool's depth more narrowly than DexScreener, so liquidity reads lower here.
+ */
+export function snapshotsFromGecko(body: unknown, fetchedAt: number): Map<string, MarketSnapshot> {
+  const found = new Map<string, MarketSnapshot>();
+  const reply = body as { data?: GeckoToken[]; included?: GeckoPool[] } | null;
+  if (!reply || !Array.isArray(reply.data)) return found;
+  const pools = new Map((Array.isArray(reply.included) ? reply.included : []).map((pool) => [pool?.id, pool]));
+  for (const token of reply.data) {
+    const address = token?.attributes?.address?.toLowerCase();
+    const priceUsd = number(token?.attributes?.price_usd);
+    if (!address || !/^0x[0-9a-f]{40}$/.test(address) || priceUsd === null || priceUsd <= 0) continue;
+    let pool: GeckoPool | undefined;
+    for (const entry of token.relationships?.top_pools?.data ?? []) {
+      const candidate = pools.get(entry?.id);
+      const depth = number(candidate?.attributes?.reserve_in_usd);
+      if (candidate && depth !== null && depth > (number(pool?.attributes?.reserve_in_usd) ?? -1)) pool = candidate;
+    }
+    const liquidityUsd = number(pool?.attributes?.reserve_in_usd);
+    if (!pool || liquidityUsd === null) continue;
+    // A pool's price changes describe its base token. For a token on the other side they are left unknown.
+    const isBase = pool.relationships?.base_token?.data?.id === `${NETWORK}_${address}`;
+    const change = isBase ? pool.attributes?.price_change_percentage : undefined;
+    const created = Date.parse(pool.attributes?.pool_created_at ?? "");
+    found.set(address, {
+      network: NETWORK,
+      address,
+      symbol: cleanSymbol(token.attributes?.symbol) || "TOKEN",
+      name: cleanSymbol(token.attributes?.name, 40),
+      priceUsd,
+      liquidityUsd,
+      marketCapUsd: number(token.attributes?.market_cap_usd) ?? number(token.attributes?.fdv_usd),
+      volumeH1: number(pool.attributes?.volume_usd?.h1),
+      volumeH6: number(pool.attributes?.volume_usd?.h6),
+      volumeH24: number(pool.attributes?.volume_usd?.h24),
+      priceChangeM5: number(change?.m5),
+      priceChangeH1: number(change?.h1),
+      priceChangeH6: number(change?.h6),
+      priceChangeH24: number(change?.h24),
+      buysH1: number(pool.attributes?.transactions?.h1?.buys),
+      sellsH1: number(pool.attributes?.transactions?.h1?.sells),
+      pairAddress: String(pool.attributes?.address ?? ""),
+      pairCreatedAt: Number.isFinite(created) ? created : null,
+      dex: cleanSymbol(pool.relationships?.dex?.data?.id, 24),
+      quoteSymbol: cleanSymbol(String(pool.attributes?.name ?? "").split(" / ")[isBase ? 1 : 0]),
+      fetchedAt,
+      source: "geckoterminal",
+    });
+  }
+  return found;
+}
+
 async function getJson(url: string): Promise<unknown> {
   let response: Response;
   try {
@@ -123,11 +199,29 @@ async function getJson(url: string): Promise<unknown> {
 }
 
 const cache = new Map<string, MarketSnapshot>();
+let primaryRestsUntil = 0;
+
+/**
+ * Snapshots for one batch of addresses. DexScreener turns away requests from
+ * some hosting providers, so when it fails GeckoTerminal answers instead. If
+ * both fail, the error goes to the caller.
+ */
+async function fetchBatch(chunk: string[]): Promise<Map<string, MarketSnapshot>> {
+  if (Date.now() >= primaryRestsUntil) {
+    try {
+      return snapshotsFromPairs(await getJson(`${DEXSCREENER}/tokens/v1/${NETWORK}/${chunk.join(",")}`), Date.now());
+    } catch (error) {
+      primaryRestsUntil = Date.now() + PRIMARY_REST_MS;
+      console.warn("[market-data] DexScreener failed, using GeckoTerminal:", error instanceof Error ? error.message : error);
+    }
+  }
+  return snapshotsFromGecko(await getJson(`${GECKOTERMINAL}/networks/${NETWORK}/tokens/multi/${chunk.join(",")}?include=top_pools`), Date.now());
+}
 
 /**
  * Current snapshots for the given token addresses. A token with no pool on
  * Robinhood Chain is simply absent from the result. Throws MarketDataError when
- * the provider fails, so callers stop instead of trading on old numbers.
+ * both providers fail, so callers stop instead of trading on old numbers.
  */
 export async function fetchSnapshots(addresses: string[], options: { fresh?: boolean } = {}): Promise<Map<string, MarketSnapshot>> {
   const wanted = [...new Set(addresses.map((address) => address.toLowerCase()))].filter((address) => /^0x[0-9a-f]{40}$/.test(address));
@@ -140,8 +234,7 @@ export async function fetchSnapshots(addresses: string[], options: { fresh?: boo
   }
   for (let start = 0; start < missing.length; start += BATCH) {
     const chunk = missing.slice(start, start + BATCH);
-    const pairs = await getJson(`${DEXSCREENER}/tokens/v1/${NETWORK}/${chunk.join(",")}`);
-    for (const [address, snapshot] of snapshotsFromPairs(pairs, Date.now())) {
+    for (const [address, snapshot] of await fetchBatch(chunk)) {
       if (!chunk.includes(address)) continue;
       cache.set(address, snapshot);
       result.set(address, snapshot);

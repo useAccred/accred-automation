@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { decideExit, type ExitRules, type MonitoredPosition } from "./exits";
 import { presetMandate } from "./mandate";
-import { cleanSymbol, snapshotsFromPairs, type MarketSnapshot } from "./market-data";
+import { MarketDataError, cleanSymbol, fetchSnapshots, snapshotsFromGecko, snapshotsFromPairs, type MarketSnapshot } from "./market-data";
 import { checkBreakers, computePortfolio, dayStart, tradeStats, type PortfolioFill, type PortfolioPosition } from "./portfolio";
 import { MAX_PROPOSALS, buildProposalMessages, parseProposals } from "./proposal";
 import { PAPER_SWAP_FEE_PERCENT, paperExitFill, paperQuote, priceImpactPercent } from "./quote";
@@ -424,6 +424,87 @@ describe("market data", () => {
     expect(found.get(A)).toMatchObject({ network: "robinhood", pairAddress: "0xdeep", liquidityUsd: 2_000_000, priceUsd: 2.5, symbol: "AAA", marketCapUsd: 10_000_000, fetchedAt: NOW, pairCreatedAt: NOW - 100 * HOUR });
     expect(found.get(B)).toMatchObject({ symbol: "scriptB$script", marketCapUsd: 77, name: "" });
     for (const input of [null, undefined, "pairs", { pairs: [pair()] }]) expect(snapshotsFromPairs(input, NOW).size).toBe(0);
+  });
+
+  /** A GeckoTerminal reply for one token and its pools, shaped as the tokens/multi endpoint sends it. */
+  const geckoReply = (address: string, pools: Array<Record<string, unknown>>, token: Record<string, unknown> = {}) => ({
+    data: [
+      {
+        attributes: { address, symbol: "CRED", name: "Accred", price_usd: "0.000125", market_cap_usd: null, fdv_usd: "122603.5", ...token },
+        relationships: { top_pools: { data: pools.map((pool) => ({ id: pool.id })) } },
+      },
+    ],
+    included: pools,
+  });
+  const geckoPool = (id: string, reserve: string, base: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    attributes: {
+      address: id.replace("robinhood_", ""),
+      name: "CRED / WETH",
+      pool_created_at: "2026-01-10T08:00:00Z",
+      reserve_in_usd: reserve,
+      volume_usd: { h1: "2849.9", h6: "19293.2", h24: "90924.4" },
+      price_change_percentage: { m5: "1.252", h1: "10.453", h6: "-14.082", h24: "3.525" },
+      transactions: { h1: { buys: 18, sells: 10 } },
+      ...extra,
+    },
+    relationships: { base_token: { data: { id: `robinhood_${base}` } }, dex: { data: { id: "uniswap-v4" } } },
+  });
+
+  it("reads GeckoTerminal tokens from their deepest pool", () => {
+    const found = snapshotsFromGecko(geckoReply(A, [geckoPool("robinhood_0xshallow", "900", A), geckoPool("robinhood_0xdeep", "24456.37", A)]), NOW);
+    expect(found.get(A)).toMatchObject({
+      network: "robinhood",
+      source: "geckoterminal",
+      symbol: "CRED",
+      priceUsd: 0.000125,
+      liquidityUsd: 24456.37,
+      marketCapUsd: 122603.5,
+      volumeH24: 90924.4,
+      priceChangeH1: 10.453,
+      priceChangeH6: -14.082,
+      buysH1: 18,
+      sellsH1: 10,
+      pairAddress: "0xdeep",
+      pairCreatedAt: Date.UTC(2026, 0, 10, 8),
+      dex: "uniswap-v4",
+      quoteSymbol: "WETH",
+      fetchedAt: NOW,
+    });
+    // On the quote side of its pool, the pool's price changes are not the token's, so they are left unknown.
+    expect(snapshotsFromGecko(geckoReply(A, [geckoPool("robinhood_0xdeep", "500", B)]), NOW).get(A)).toMatchObject({ priceChangeH1: null, priceChangeH24: null, quoteSymbol: "CRED", liquidityUsd: 500 });
+    // No price, no pool or no depth: no snapshot.
+    expect(snapshotsFromGecko(geckoReply(A, [geckoPool("robinhood_0xdeep", "500", A)], { price_usd: "0" }), NOW).size).toBe(0);
+    expect(snapshotsFromGecko(geckoReply(A, []), NOW).size).toBe(0);
+    expect(snapshotsFromGecko(geckoReply(A, [geckoPool("robinhood_0xdeep", "n/a", A)]), NOW).size).toBe(0);
+    for (const input of [null, undefined, "tokens", { data: "x" }, []]) expect(snapshotsFromGecko(input, NOW).size).toBe(0);
+  });
+
+  describe("providers", () => {
+    afterEach(() => vi.unstubAllGlobals());
+    const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+
+    it("uses GeckoTerminal when DexScreener turns the request away, and rests DexScreener for a while", async () => {
+      const token = `0x${"7".repeat(40)}`;
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", async (url: string) => {
+        calls.push(url);
+        return url.includes("dexscreener") ? reply(403, {}) : reply(200, geckoReply(token, [geckoPool("robinhood_0xdeep", "24456.37", token)]));
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      expect((await fetchSnapshots([token])).get(token)).toMatchObject({ source: "geckoterminal", priceUsd: 0.000125 });
+      expect(calls.map((url) => new URL(url).host)).toEqual(["api.dexscreener.com", "api.geckoterminal.com"]);
+      expect(warn).toHaveBeenCalledOnce();
+      // A fresh read straight after goes to GeckoTerminal without waiting on DexScreener again.
+      await fetchSnapshots([token], { fresh: true });
+      expect(calls.map((url) => new URL(url).host).slice(2)).toEqual(["api.geckoterminal.com"]);
+      warn.mockRestore();
+    });
+
+    it("fails when both providers fail", async () => {
+      vi.stubGlobal("fetch", async () => reply(429, {}));
+      await expect(fetchSnapshots([`0x${"8".repeat(40)}`], { fresh: true })).rejects.toBeInstanceOf(MarketDataError);
+    });
   });
 
   it("cleanSymbol strips markup characters", () => {

@@ -174,7 +174,7 @@ async function runCycle(cycle: Cycle): Promise<CycleResult> {
     type: "run.scan",
     actor: "system",
     summary: `Scanned ${universe.length} assets: ${shortlist.length} passed the filters`,
-    data: { source: "dexscreener", candidates: shortlist.map((candidate) => candidate.market), filtered },
+    data: { source: [...new Set([...snapshots.values()].map((snapshot) => snapshot.source))].join(", ") || "none", candidates: shortlist.map((candidate) => candidate.market), filtered },
   });
   if (shortlist.length === 0) {
     return finish(cycle, "skipped", `None of the ${universe.length} assets passed the market filters and strategy screens. The model was not called.`);

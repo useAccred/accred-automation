@@ -30,7 +30,7 @@ A trade is signed only if all three are on, and each is checked again at the las
 ## How a trade happens
 
 ```text
-Market scan            market-data.ts   DexScreener prices for the allowlisted assets
+Market scan            market-data.ts   prices for the allowlisted assets (DexScreener, else GeckoTerminal)
   ↓
 Candidate filter       engine.ts        mandate market filters + strategy screens
   ↓                                     no candidate → the model is not called, no credits spent
@@ -209,7 +209,7 @@ Everything external (market data, the model, the clock, the venue) is passed in 
 3. **No security review** of key custody or the signing design. The server holds the keys. `TRADING_WALLET_SECRET`, database access and backups decide who can reach them. The plan's preferred design, a smart account or session key with on-chain spending limits, is not built.
 4. **LI.FI is a dependency in the money path.** If its API is down or rate-limits this server, nothing can be bought, and exits cannot be sold until it is back. Set `LIFI_API_KEY`. There is no second route source.
 5. **LI.FI's router is upgradeable by LI.FI.** Exact approvals limit what a bad route or a compromised router could take to the size of one trade.
-6. **Market data comes from one provider** (DexScreener, public and rate-limited). A wrong price can trigger a stop or a target. Slippage and impact checks compare against it.
+6. **Market data comes from public, rate-limited providers.** DexScreener is read first. When it fails, which it can from a hosting provider's addresses, GeckoTerminal answers instead and the server logs why. A wrong price can trigger a stop or a target, and slippage and impact checks compare against it. GeckoTerminal refreshes less often, so stops can react later on it, and it counts a pool's depth more narrowly, so liquidity reads lower and the minimum-liquidity check rejects more. Each scan records which provider it used. If both fail, nothing trades.
 7. **Tokens that cannot be sold.** A token that blocks transfers or taxes sells will fail its exit. The simulation catches a buy that delivers nothing, not a token that turns hostile later. Users choose the allowlist.
 8. **USDG is treated as $1.**
 9. **The public RPC is rate-limited.** Set `ROBINHOOD_RPC_URL` to a dedicated provider that supports `eth_simulateV1`; without that method nothing passes check 15.
