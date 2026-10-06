@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, ShieldCheck, X } from "lucide-react";
+import { Check, ChevronDown, Plus, ShieldCheck, TriangleAlert, X } from "lucide-react";
 import Link from "next/link";
 import { useActionState, useState, useTransition } from "react";
 import { lookupAsset, saveTradingAgent } from "@/app/trading-actions";
@@ -13,8 +13,10 @@ import { modelBrand } from "@/lib/model-brand";
 import type { FormCatalog } from "@/lib/queries";
 import { compactUsd, fmtUsd, shortAddress } from "@/lib/trading/format";
 import { NETWORK, PRESETS, positionCapUsd, presetMandate, profileOf, type Mandate, type MandateAsset, type RiskProfile } from "@/lib/trading/mandate";
-import { INTERVALS, MANDATE_GROUPS, NUMERIC_KEYS } from "@/lib/trading/mandate-fields";
+import { ESSENTIAL_FIELDS, ESSENTIAL_KEYS, INTERVALS, MANDATE_GROUPS, NUMERIC_KEYS, minimumsToFit, type AssetFacts } from "@/lib/trading/mandate-fields";
+import type { AssetOption } from "@/lib/trading/market-data";
 import { PERMISSIONS, PERMISSION_LIST, REQUIRED_WITH_EXECUTE, type Permission } from "@/lib/trading/permissions";
+import { marketFilterFailure } from "@/lib/trading/risk-engine";
 import { STRATEGIES, STRATEGY_KINDS, type StrategyKind } from "@/lib/trading/strategy";
 
 export interface TradingFormValues {
@@ -44,14 +46,6 @@ export interface WalletOption {
   revoked: boolean;
 }
 
-interface AssetOption {
-  address: string;
-  symbol: string;
-  name: string;
-  liquidityUsd: number;
-  volumeH24: number;
-}
-
 type NumericKey = (typeof NUMERIC_KEYS)[number];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const chip = (on: boolean) =>
@@ -66,6 +60,7 @@ export function TradingForm({
   connections,
   catalog,
   topAssets,
+  assetFacts = {},
   openPositions = 0,
   liveEnabled,
 }: {
@@ -74,6 +69,8 @@ export function TradingForm({
   connections: Array<{ id: string; kind: ConnectionKind; name: string }>;
   catalog: FormCatalog;
   topAssets: AssetOption[];
+  /** Market facts for assets already on the allowlist, so the form can say whether each would pass the filters. */
+  assetFacts?: Record<string, AssetFacts>;
   openPositions?: number;
   /** Whether this server may trade with real funds. */
   liveEnabled: boolean;
@@ -98,6 +95,8 @@ export function TradingForm({
   const [blocked, setBlocked] = useState(initial.mandate.blockedAssets.join("\n"));
   const [permissions, setPermissions] = useState<Permission[]>(initial.permissions);
   const [selected, setSelected] = useState<string[]>(initial.connectionIds);
+  const [facts, setFacts] = useState<Record<string, AssetFacts>>(() => ({ ...Object.fromEntries(topAssets.map((asset) => [asset.address, asset])), ...assetFacts }));
+  const [now] = useState(() => Date.now());
   const [customAddress, setCustomAddress] = useState("");
   const [lookupError, setLookupError] = useState<string>();
   const [looking, startLookup] = useTransition();
@@ -128,6 +127,22 @@ export function TradingForm({
 
   const setNumber = (key: NumericKey, value: string) => setNumbers((current) => ({ ...current, [key]: value }));
 
+  /** Why the market filters would turn an asset away right now, by the rule the risk engine itself applies. Undefined when its figures are not known. */
+  function blocker(address: string): string | null | undefined {
+    const known = facts[address];
+    if (!known || !complete) return undefined;
+    return marketFilterFailure(mandate, { network: NETWORK, priceUsd: 1, liquidityUsd: known.liquidityUsd, marketCapUsd: known.marketCapUsd, pairCreatedAt: known.pairCreatedAt, fetchedAt: now }, now);
+  }
+
+  function fitMinimums(address: string) {
+    const known = facts[address];
+    if (!known) return;
+    setNumbers((current) => ({ ...current, ...Object.fromEntries(Object.entries(minimumsToFit(known, mandate, now)).map(([key, value]) => [key, String(value)])) }));
+  }
+
+  const targetShort = complete && mandate.defaultTakeProfitPercent < mandate.defaultStopLossPercent * mandate.minimumRiskReward;
+  const stopTooWide = complete && mandate.defaultStopLossPercent > mandate.maxStopLossPercent;
+
   function applyPreset(next: Exclude<RiskProfile, "custom">) {
     const filled = presetMandate(next, Number.isFinite(allocation) && allocation > 0 ? allocation : 1000);
     setNumbers((current) => ({ ...current, ...Object.fromEntries(NUMERIC_KEYS.filter((key) => key !== "agentAllocationUsd" && key !== "reserveUsd").map((key) => [key, String(filled[key])])) }));
@@ -155,6 +170,7 @@ export function TradingForm({
       const result = await lookupAsset(customAddress);
       if (result.error || !result.asset) return setLookupError(result.error ?? "That token could not be found.");
       const found = result.asset;
+      setFacts((current) => ({ ...current, [found.address]: found }));
       setAssets((current) => (current.some((entry) => entry.address === found.address) ? current : [...current, { address: found.address, symbol: found.symbol }]));
       setCustomAddress("");
     });
@@ -415,77 +431,115 @@ export function TradingForm({
             <span className="mt-1 block text-xs text-muted">Selected as soon as you edit any limit.</span>
           </div>
         </div>
-        {MANDATE_GROUPS.map((group) => (
-          <fieldset key={group.id}>
-            <legend className="text-[13px] font-medium">{group.title}</legend>
-            <p className="mb-3 mt-0.5 text-xs text-muted">{group.blurb}</p>
-            <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
-              {group.fields.map((field) => (
-                <div key={field.key}>
-                  <label className="label" htmlFor={field.key}>
-                    {field.label} {field.unit && <span className="font-normal text-muted">({field.unit})</span>}
-                  </label>
-                  <input id={field.key} className="input font-mono" inputMode="decimal" value={numbers[field.key]} onChange={(event) => setNumber(field.key, event.target.value)} required />
-                  <p className="hint">{field.hint}</p>
-                </div>
-              ))}
-            </div>
-            {group.id === "position" && (
-              <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-line p-3">
-                <input type="checkbox" checked={stopLossRequired} onChange={(event) => setStopLossRequired(event.target.checked)} className="mt-0.5 size-4 accent-[hsl(224_83%_51%)]" />
-                <span>
-                  <span className="block text-[13px] font-medium">Every proposal must state its stop loss</span>
-                  <span className="mt-1 block text-xs text-muted">A proposal without one is rejected. When off, the default stop loss is applied instead. Either way, no position is ever open without a stop.</span>
-                </span>
-              </label>
-            )}
-            {group.id === "time" && (
-              <div className="mt-3 rounded-lg border border-line p-3">
-                <label className="flex cursor-pointer items-center gap-3">
-                  <input type="checkbox" checked={hours.enabled} onChange={(event) => setHours({ ...hours, enabled: event.target.checked })} className="size-4 accent-[hsl(224_83%_51%)]" />
-                  <span className="text-[13px] font-medium">Only open positions during set hours</span>
+        <fieldset>
+          <legend className="text-[13px] font-medium">The limits that matter most</legend>
+          <p className="mb-3 mt-0.5 text-xs text-muted">Check these six. Everything else is filled in by the profile above and can stay as it is.</p>
+          <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+            {ESSENTIAL_FIELDS.map((field) => (
+              <div key={field.key}>
+                <label className="label" htmlFor={field.key}>
+                  {field.label} {field.unit && <span className="font-normal text-muted">({field.unit})</span>}
                 </label>
-                {hours.enabled && (
-                  <div className="mt-3 flex flex-wrap items-end gap-3">
-                    <div>
-                      <label className="label" htmlFor="startHour">
-                        From
-                      </label>
-                      <select id="startHour" className="input" value={hours.startHour} onChange={(event) => setHours({ ...hours, startHour: Number(event.target.value) })}>
-                        {Array.from({ length: 24 }, (_, hour) => (
-                          <option key={hour} value={hour}>{`${String(hour).padStart(2, "0")}:00`}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="label" htmlFor="endHour">
-                        Until
-                      </label>
-                      <select id="endHour" className="input" value={hours.endHour} onChange={(event) => setHours({ ...hours, endHour: Number(event.target.value) })}>
-                        {Array.from({ length: 24 }, (_, hour) => (
-                          <option key={hour} value={hour}>{`${String(hour).padStart(2, "0")}:59`}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {WEEKDAYS.map((day, index) => {
-                        const on = hours.days.includes(index);
-                        return (
-                          <button key={day} type="button" aria-pressed={on} onClick={() => setHours({ ...hours, days: on ? hours.days.filter((entry) => entry !== index) : [...hours.days, index].sort() })} className={chip(on)}>
-                            {day}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <p className="hint basis-full" suppressHydrationWarning>
-                      In your timezone ({timezone}). Exits are enforced at all hours.
-                    </p>
-                  </div>
-                )}
+                <input id={field.key} className="input font-mono" inputMode="decimal" value={numbers[field.key]} onChange={(event) => setNumber(field.key, event.target.value)} required />
+                <p className="hint">{field.hint}</p>
               </div>
-            )}
-          </fieldset>
-        ))}
+            ))}
+          </div>
+          {targetShort && (
+            <p className="mt-3 text-xs text-warning">
+              With a {mandate.defaultStopLossPercent}% stop loss, the take profit must be at least {+(mandate.defaultStopLossPercent * mandate.minimumRiskReward).toFixed(2)}% (your minimum risk/reward is {mandate.minimumRiskReward}×). Otherwise trades
+              that use these defaults are rejected.
+            </p>
+          )}
+          {stopTooWide && (
+            <p className="mt-3 text-xs text-warning">
+              The stop loss is wider than the widest stop allowed ({mandate.maxStopLossPercent}%). Raise &ldquo;Widest stop loss&rdquo; under All other limits, or narrow the stop.
+            </p>
+          )}
+        </fieldset>
+        <details className="group rounded-lg border border-line">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-3 text-[13px] font-medium [&::-webkit-details-marker]:hidden">
+            <span>
+              All other limits <span className="font-normal text-muted">· {NUMERIC_KEYS.length - 1 - ESSENTIAL_KEYS.length} more, set by the profile</span>
+            </span>
+            <ChevronDown size={15} className="text-muted transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="space-y-6 border-t border-line p-3 sm:p-4">
+          {MANDATE_GROUPS.map((group) => (
+            <fieldset key={group.id}>
+              <legend className="text-[13px] font-medium">{group.title}</legend>
+              <p className="mb-3 mt-0.5 text-xs text-muted">{group.blurb}</p>
+              <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+                {group.fields
+                  .filter((field) => !ESSENTIAL_KEYS.includes(field.key))
+                  .map((field) => (
+                  <div key={field.key}>
+                    <label className="label" htmlFor={field.key}>
+                      {field.label} {field.unit && <span className="font-normal text-muted">({field.unit})</span>}
+                    </label>
+                    <input id={field.key} className="input font-mono" inputMode="decimal" value={numbers[field.key]} onChange={(event) => setNumber(field.key, event.target.value)} />
+                    <p className="hint">{field.hint}</p>
+                  </div>
+                ))}
+              </div>
+              {group.id === "position" && (
+                <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-line p-3">
+                  <input type="checkbox" checked={stopLossRequired} onChange={(event) => setStopLossRequired(event.target.checked)} className="mt-0.5 size-4 accent-[hsl(224_83%_51%)]" />
+                  <span>
+                    <span className="block text-[13px] font-medium">Every proposal must state its stop loss</span>
+                    <span className="mt-1 block text-xs text-muted">A proposal without one is rejected. When off, the default stop loss is applied instead. Either way, no position is ever open without a stop.</span>
+                  </span>
+                </label>
+              )}
+              {group.id === "time" && (
+                <div className="mt-3 rounded-lg border border-line p-3">
+                  <label className="flex cursor-pointer items-center gap-3">
+                    <input type="checkbox" checked={hours.enabled} onChange={(event) => setHours({ ...hours, enabled: event.target.checked })} className="size-4 accent-[hsl(224_83%_51%)]" />
+                    <span className="text-[13px] font-medium">Only open positions during set hours</span>
+                  </label>
+                  {hours.enabled && (
+                    <div className="mt-3 flex flex-wrap items-end gap-3">
+                      <div>
+                        <label className="label" htmlFor="startHour">
+                          From
+                        </label>
+                        <select id="startHour" className="input" value={hours.startHour} onChange={(event) => setHours({ ...hours, startHour: Number(event.target.value) })}>
+                          {Array.from({ length: 24 }, (_, hour) => (
+                            <option key={hour} value={hour}>{`${String(hour).padStart(2, "0")}:00`}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="endHour">
+                          Until
+                        </label>
+                        <select id="endHour" className="input" value={hours.endHour} onChange={(event) => setHours({ ...hours, endHour: Number(event.target.value) })}>
+                          {Array.from({ length: 24 }, (_, hour) => (
+                            <option key={hour} value={hour}>{`${String(hour).padStart(2, "0")}:59`}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {WEEKDAYS.map((day, index) => {
+                          const on = hours.days.includes(index);
+                          return (
+                            <button key={day} type="button" aria-pressed={on} onClick={() => setHours({ ...hours, days: on ? hours.days.filter((entry) => entry !== index) : [...hours.days, index].sort() })} className={chip(on)}>
+                              {day}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="hint basis-full" suppressHydrationWarning>
+                        In your timezone ({timezone}). Exits are enforced at all hours.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </fieldset>
+          ))}
+          </div>
+        </details>
       </section>
 
       <section className="card space-y-4 p-5 sm:p-6">
@@ -502,6 +556,37 @@ export function TradingForm({
               </button>
             ))}
           </div>
+        )}
+        {assets.length > 0 && (
+          <ul className="space-y-2">
+            {assets.map((asset) => {
+              const reason = blocker(asset.address);
+              if (reason === undefined) return null;
+              return reason === null ? (
+                <li key={asset.address} className="flex items-center gap-2 text-xs text-success">
+                  <Check size={13} className="flex-none" />
+                  <span>
+                    <span className="font-medium">{asset.symbol}</span> passes your market filters. The agent can trade it.
+                  </span>
+                </li>
+              ) : (
+                <li key={asset.address} className="rounded-lg border border-warning/40 bg-warning/5 p-3 text-xs">
+                  <p className="flex items-start gap-2 text-warning">
+                    <TriangleAlert size={13} className="mt-0.5 flex-none" />
+                    <span>
+                      <span className="font-medium">{asset.symbol} will not be traded with your current limits.</span> {reason}.
+                    </span>
+                  </p>
+                  <div className="mt-2 flex flex-wrap items-center gap-3 pl-5">
+                    <button type="button" className="btn btn-secondary" onClick={() => fitMinimums(asset.address)}>
+                      Lower my minimums so it can trade
+                    </button>
+                    <span className="text-muted">This loosens a safety filter. Small pools cost more to buy and sell.</span>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         )}
         {topAssets.length > 0 ? (
           <div>

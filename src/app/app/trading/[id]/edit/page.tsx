@@ -7,7 +7,7 @@ import { env } from "@/lib/env";
 import { isConnectionKind } from "@/lib/connections/kinds";
 import { microToExact } from "@/lib/credits";
 import { formCatalog, listConnections } from "@/lib/queries";
-import { topAssets } from "@/lib/trading/market-data";
+import { fetchSnapshots, topAssets } from "@/lib/trading/market-data";
 import { getTradingAgent, listPositions, listWallets } from "@/lib/trading/queries";
 import { walletBalances } from "@/lib/trading/wallets";
 
@@ -22,6 +22,10 @@ export default async function EditTradingAgentPage({ params }: { params: Promise
   const { automation, mandate, strategy } = agent;
   const [wallets, rows, catalog, assets, open] = await Promise.all([listWallets(user.id), listConnections(user.id), formCatalog(), topAssets(), listPositions(automation.id, "open", 50)]);
   const balances = await Promise.all(wallets.map((wallet) => walletBalances(wallet.address)));
+  // Lets the form say whether each asset already chosen would pass the market filters. Without it the form simply says nothing.
+  const assetFacts = await fetchSnapshots(mandate.allowedAssets.map((asset) => asset.address))
+    .then((snapshots) => Object.fromEntries([...snapshots].map(([address, market]) => [address, { liquidityUsd: market.liquidityUsd, marketCapUsd: market.marketCapUsd, pairCreatedAt: market.pairCreatedAt }])))
+    .catch(() => ({}));
   const connections = rows.flatMap((row) => (isConnectionKind(row.kind) && NOTIFY_KINDS.includes(row.kind) ? [{ id: row.id, kind: row.kind, name: row.name }] : []));
 
   return (
@@ -68,6 +72,7 @@ export default async function EditTradingAgentPage({ params }: { params: Promise
         connections={connections}
         catalog={catalog}
         topAssets={assets}
+        assetFacts={assetFacts}
         liveEnabled={env.liveTrading}
         openPositions={open.length}
       />

@@ -78,6 +78,50 @@ export const MANDATE_GROUPS: Array<{ id: string; title: string; blurb: string; f
   },
 ];
 
+/**
+ * The few limits shown up front in the form. The rest are filled in by the risk
+ * profile and sit under "All other limits". These six are the ones a user most
+ * often needs to change, and the ones that most often stop an agent from trading.
+ */
+export const ESSENTIAL_KEYS: NumericKey[] = ["maxPositionPercent", "defaultStopLossPercent", "defaultTakeProfitPercent", "dailyLossLimitPercent", "minimumLiquidityUsd", "minimumMarketCapUsd"];
+
+const ALL_FIELDS = new Map(MANDATE_GROUPS.flatMap((group) => group.fields.map((field) => [field.key, field] as [NumericKey, MandateField])));
+export const ESSENTIAL_FIELDS: MandateField[] = ESSENTIAL_KEYS.map((key) => ALL_FIELDS.get(key)!);
+
+/** What the market data says about an asset, as far as the market filters care. */
+export interface AssetFacts {
+  liquidityUsd: number;
+  marketCapUsd: number | null;
+  /** When its deepest pool was created, in milliseconds. */
+  pairCreatedAt: number | null;
+}
+
+/** Rounds down to two significant digits: 19,423 becomes 19,000. */
+function roundDown(value: number): number {
+  if (!(value > 0)) return 0;
+  const step = 10 ** (Math.floor(Math.log10(value)) - 1);
+  return Math.floor(value / step) * step;
+}
+
+/**
+ * The market-filter minimums that would have to come down for an asset to be
+ * tradeable, each set a fifth below what the asset shows today so that an
+ * ordinary move does not block it again. A filter the asset already passes is
+ * left out. A figure the market data does not have turns its filter off.
+ */
+export function minimumsToFit(facts: AssetFacts, mandate: Pick<Mandate, "minimumLiquidityUsd" | "minimumMarketCapUsd" | "minimumTokenAgeHours">, now: number) {
+  const changes: Partial<Record<"minimumLiquidityUsd" | "minimumMarketCapUsd" | "minimumTokenAgeHours", number>> = {};
+  if (facts.liquidityUsd < mandate.minimumLiquidityUsd) changes.minimumLiquidityUsd = roundDown(facts.liquidityUsd * 0.8);
+  if (mandate.minimumMarketCapUsd > 0 && !(facts.marketCapUsd !== null && facts.marketCapUsd >= mandate.minimumMarketCapUsd)) {
+    changes.minimumMarketCapUsd = facts.marketCapUsd === null ? 0 : roundDown(facts.marketCapUsd * 0.8);
+  }
+  if (mandate.minimumTokenAgeHours > 0) {
+    const hours = facts.pairCreatedAt === null ? null : (now - facts.pairCreatedAt) / 3_600_000;
+    if (hours === null || hours < mandate.minimumTokenAgeHours) changes.minimumTokenAgeHours = hours === null ? 0 : Math.floor(Math.max(0, hours) * 0.8);
+  }
+  return changes;
+}
+
 export const NUMERIC_KEYS: NumericKey[] = ["agentAllocationUsd", ...MANDATE_GROUPS.flatMap((group) => group.fields.map((field) => field.key))];
 
 const LABELS = new Map<string, string>([

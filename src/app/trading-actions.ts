@@ -16,7 +16,7 @@ import { runTradingCycle } from "@/lib/trading/engine";
 import { env } from "@/lib/env";
 import { MandateSchema, canonicalMandate, profileOf, riskIncreases, type Mandate } from "@/lib/trading/mandate";
 import { INTERVALS, NUMERIC_KEYS, mandateLabel } from "@/lib/trading/mandate-fields";
-import { cleanSymbol, fetchSnapshots } from "@/lib/trading/market-data";
+import { cleanSymbol, fetchSnapshots, type AssetOption } from "@/lib/trading/market-data";
 import { closePosition } from "@/lib/trading/monitor";
 import { notifyTrading } from "@/lib/trading/notify";
 import { PERMISSIONS, REQUIRED_WITH_EXECUTE, TRADING_AUTHORITY, isPermission, type Permission } from "@/lib/trading/permissions";
@@ -109,7 +109,7 @@ export async function withdrawFromWallet(_previous: TradingFormState, form: Form
 
 export interface AssetLookup {
   error?: string;
-  asset?: { address: string; symbol: string; name: string; liquidityUsd: number; volumeH24: number };
+  asset?: AssetOption;
 }
 
 /** Looks a token address up on Robinhood Chain, for adding an asset the picker does not list. */
@@ -121,7 +121,17 @@ export async function lookupAsset(address: string): Promise<AssetLookup> {
   try {
     const market = (await fetchSnapshots([wanted])).get(wanted);
     if (!market) return { error: "No pool was found for that token on Robinhood Chain." };
-    return { asset: { address: wanted, symbol: cleanSymbol(market.symbol) || "TOKEN", name: market.name, liquidityUsd: market.liquidityUsd, volumeH24: market.volumeH24 ?? 0 } };
+    return {
+      asset: {
+        address: wanted,
+        symbol: cleanSymbol(market.symbol) || "TOKEN",
+        name: market.name,
+        liquidityUsd: market.liquidityUsd,
+        volumeH24: market.volumeH24 ?? 0,
+        marketCapUsd: market.marketCapUsd,
+        pairCreatedAt: market.pairCreatedAt,
+      },
+    };
   } catch {
     return { error: "Market data could not be loaded. Try again in a moment." };
   }

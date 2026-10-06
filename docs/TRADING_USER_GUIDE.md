@@ -108,7 +108,9 @@ Start with a profile. A profile only fills in the fields below it. There are no 
 - **Aggressive**: larger positions, wider stops, thinner markets allowed.
 - **Custom**: selected as soon as you edit any limit.
 
-Then check each group and change what you want:
+Then check **The limits that matter most**. These six are shown up front: **Largest position (%)**, **Default stop loss (%)**, **Default take profit (%)**, **Daily loss limit (%)**, **Minimum liquidity ($)** and **Minimum market cap ($)**. If the form shows a yellow note under them, fix what it says, or trades will be rejected.
+
+Everything else is under **All other limits**. The profile fills those in and they can stay as they are. Open it only if you want to change one of these groups:
 
 - **Capital.** How much the agent may deploy, in total and per position. For example **Largest position**, **Total open exposure**, **Open positions at once** and **Untouchable reserve**.
 - **Loss.** When the agent must stop. For example **Largest loss per trade**, **Daily loss limit**, **Maximum drawdown**, **Losses in a row** and **Cooldown after a loss**. Reaching any of these pauses new trading automatically.
@@ -129,6 +131,7 @@ The agent may only trade what you select here. Nothing is allowed by default.
 
 - Press a token in the list of the most traded tokens on Robinhood Chain to add it.
 - Or paste a token address under **Add a token by address** and press **Add**.
+- Under each token you select, the form tells you whether it passes your market filters. If it says the token **will not be traded with your current limits**, it also says why. Press **Lower my minimums so it can trade** to fix it, or pick another token. Lowering a minimum loosens a safety filter: small pools cost more to buy and sell.
 - **Blocklist (optional)**: token addresses the agent must never trade, one per line.
 
 You must select at least one asset.

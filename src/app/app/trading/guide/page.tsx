@@ -192,7 +192,8 @@ export default function TradingGuidePage() {
             <li><strong>Aggressive</strong>: larger positions, wider stops, thinner markets allowed.</li>
             <li><strong>Custom</strong>: selected as soon as you edit any limit.</li>
           </ul>
-          <p>Then check each group and change what you want:</p>
+          <p>Then check <strong>The limits that matter most</strong>. These six are shown up front: <strong>Largest position (%)</strong>, <strong>Default stop loss (%)</strong>, <strong>Default take profit (%)</strong>, <strong>Daily loss limit (%)</strong>, <strong>Minimum liquidity ($)</strong> and <strong>Minimum market cap ($)</strong>. If the form shows a yellow note under them, fix what it says, or trades will be rejected.</p>
+          <p>Everything else is under <strong>All other limits</strong>. The profile fills those in and they can stay as they are. Open it only if you want to change one of these groups:</p>
           <ul>
             <li><strong>Capital.</strong> How much the agent may deploy, in total and per position. For example <strong>Largest position</strong>, <strong>Total open exposure</strong>, <strong>Open positions at once</strong> and <strong>Untouchable reserve</strong>.</li>
             <li><strong>Loss.</strong> When the agent must stop. For example <strong>Largest loss per trade</strong>, <strong>Daily loss limit</strong>, <strong>Maximum drawdown</strong>, <strong>Losses in a row</strong> and <strong>Cooldown after a loss</strong>. Reaching any of these pauses new trading automatically.</li>
@@ -211,6 +212,7 @@ export default function TradingGuidePage() {
           <ul>
             <li>Press a token in the list of the most traded tokens on Robinhood Chain to add it.</li>
             <li>Or paste a token address under <strong>Add a token by address</strong> and press <strong>Add</strong>.</li>
+            <li>Under each token you select, the form tells you whether it passes your market filters. If it says the token <strong>will not be traded with your current limits</strong>, it also says why. Press <strong>Lower my minimums so it can trade</strong> to fix it, or pick another token. Lowering a minimum loosens a safety filter: small pools cost more to buy and sell.</li>
             <li><strong>Blocklist (optional)</strong>: token addresses the agent must never trade, one per line.</li>
           </ul>
           <p>You must select at least one asset.</p>

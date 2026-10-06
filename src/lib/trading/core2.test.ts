@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decideExit, type ExitRules, type MonitoredPosition } from "./exits";
 import { presetMandate } from "./mandate";
+import { ESSENTIAL_FIELDS, ESSENTIAL_KEYS, NUMERIC_KEYS, minimumsToFit } from "./mandate-fields";
 import { MarketDataError, cleanSymbol, fetchSnapshots, snapshotsFromGecko, snapshotsFromPairs, type MarketSnapshot } from "./market-data";
 import { checkBreakers, computePortfolio, dayStart, tradeStats, type PortfolioFill, type PortfolioPosition } from "./portfolio";
 import { MAX_PROPOSALS, buildProposalMessages, parseProposals } from "./proposal";
@@ -402,6 +403,28 @@ describe("matchingStrategies", () => {
     expect(match({ volumeH1: 199.99, volumeH24: 2400 })).toEqual([]);
     expect(match({ volumeH1: 200, volumeH24: 0 })).toEqual([]);
     expect(matchingStrategies(["momentum"], { ...none, priceChangeH1: -3, priceChangeH24: 0 })).toEqual([]);
+  });
+});
+
+describe("the form's short list of limits", () => {
+  it("shows a few known limits up front and leaves the rest to the profile", () => {
+    expect(ESSENTIAL_KEYS).toHaveLength(6);
+    expect(ESSENTIAL_FIELDS.map((field) => field.key)).toEqual(ESSENTIAL_KEYS);
+    for (const key of ESSENTIAL_KEYS) expect(NUMERIC_KEYS).toContain(key);
+  });
+
+  it("lowers only the minimums an asset fails, to a fifth below what it shows", () => {
+    const limits = { minimumLiquidityUsd: 25_000, minimumMarketCapUsd: 250_000, minimumTokenAgeHours: 72 };
+    // Thin and small, but old enough: two minimums come down, the age filter is left alone.
+    expect(minimumsToFit({ liquidityUsd: 24_279, marketCapUsd: 117_813, pairCreatedAt: NOW - 83 * HOUR }, limits, NOW)).toEqual({ minimumLiquidityUsd: 19_000, minimumMarketCapUsd: 94_000 });
+    // Passing everything changes nothing.
+    expect(minimumsToFit({ liquidityUsd: 900_000, marketCapUsd: 9_000_000, pairCreatedAt: NOW - 500 * HOUR }, limits, NOW)).toEqual({});
+    // Too young: the age minimum comes down below its real age.
+    expect(minimumsToFit({ liquidityUsd: 900_000, marketCapUsd: 9_000_000, pairCreatedAt: NOW - 30 * HOUR }, limits, NOW)).toEqual({ minimumTokenAgeHours: 24 });
+    // A figure the market data does not have turns its filter off, since it could never be met.
+    expect(minimumsToFit({ liquidityUsd: 900_000, marketCapUsd: null, pairCreatedAt: null }, limits, NOW)).toEqual({ minimumMarketCapUsd: 0, minimumTokenAgeHours: 0 });
+    // A filter that is already off stays off.
+    expect(minimumsToFit({ liquidityUsd: 900_000, marketCapUsd: null, pairCreatedAt: null }, { minimumLiquidityUsd: 0, minimumMarketCapUsd: 0, minimumTokenAgeHours: 0 }, NOW)).toEqual({});
   });
 });
 

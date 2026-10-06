@@ -343,6 +343,9 @@ export interface AssetOption {
   name: string;
   liquidityUsd: number;
   volumeH24: number;
+  marketCapUsd: number | null;
+  /** When its deepest pool was created, in milliseconds. */
+  pairCreatedAt: number | null;
 }
 
 let topCache: { at: number; value: AssetOption[] } | undefined;
@@ -354,7 +357,10 @@ export async function topAssets(): Promise<AssetOption[]> {
   if (topCache && Date.now() - topCache.at < 15 * 60_000) return topCache.value;
   try {
     const body = (await getJson(`${GECKOTERMINAL}/networks/${NETWORK}/pools?page=1&sort=h24_volume_usd_desc&include=base_token`)) as {
-      data?: Array<{ attributes?: { reserve_in_usd?: string; volume_usd?: { h24?: string } }; relationships?: { base_token?: { data?: { id?: string } } } }>;
+      data?: Array<{
+        attributes?: { reserve_in_usd?: string; volume_usd?: { h24?: string }; market_cap_usd?: string | null; fdv_usd?: string | null; pool_created_at?: string };
+        relationships?: { base_token?: { data?: { id?: string } } };
+      }>;
       included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }>;
     };
     const tokens = new Map((body.included ?? []).map((token) => [token.id, token.attributes]));
@@ -372,6 +378,8 @@ export async function topAssets(): Promise<AssetOption[]> {
         name: cleanSymbol(token?.name, 40),
         liquidityUsd,
         volumeH24: number(pool.attributes?.volume_usd?.h24) ?? 0,
+        marketCapUsd: number(pool.attributes?.market_cap_usd) ?? number(pool.attributes?.fdv_usd),
+        pairCreatedAt: Number.isFinite(Date.parse(pool.attributes?.pool_created_at ?? "")) ? Date.parse(pool.attributes?.pool_created_at ?? "") : null,
       });
     }
     const value = [...byAddress.values()].sort((a, b) => b.liquidityUsd - a.liquidityUsd).slice(0, 16);
