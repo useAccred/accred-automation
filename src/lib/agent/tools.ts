@@ -68,9 +68,21 @@ const webFetch = define({
   effect: "read",
   title: (args) => `Read ${args.url}`,
   async run(args) {
-    const response = await safeFetch(args.url, {
-      headers: { "user-agent": "AccredAutomation/1.0 (+https://agent.accred.sh)", accept: "*/*" },
-    });
+    const read = () =>
+      safeFetch(args.url, {
+        headers: { "user-agent": "AccredAutomation/1.0 (+https://agent.accred.sh)", accept: "*/*" },
+      });
+    let response = await read();
+    if (response.status === 429 || response.status === 503) {
+      // A short pause clears most momentary limits; a second refusal means the site is limiting this server.
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      response = await read();
+    }
+    if (response.status === 429) {
+      throw new ToolError(
+        "This site is limiting how often this server may read it (HTTP 429). Trying again in this run will not help. Finish and report that the source is rate limited.",
+      );
+    }
     if (!response.ok) throw new ToolError(`The page returned HTTP ${response.status}.`);
     if (isFeed(response.text)) return feedToText(response.text);
     if (/html/i.test(response.contentType) || /^\s*<(!doctype|html)/i.test(response.text)) return htmlToText(response.text);

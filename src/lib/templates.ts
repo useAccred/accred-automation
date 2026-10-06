@@ -47,7 +47,7 @@ export const TEMPLATES: Template[] = [
     description: "Checks a price every hour and messages you only when it crosses your line.",
     category: "Alert",
     instruction:
-      "Fetch https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd and read the ETH price in USD. " +
+      "Fetch https://api.coinbase.com/v2/prices/ETH-USD/spot and read the ETH price in USD (the \"amount\" field). " +
       "Read memory to see the last price you alerted on. If the price is below 2000 or above 4000 and you have not " +
       "already alerted for that side, send a Telegram message with the price, then save the alert in memory. " +
       "Otherwise do nothing.",
