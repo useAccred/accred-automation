@@ -3,5 +3,6 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
-  test: { include: ["src/**/*.test.ts"] },
+  // The database-backed trading tests drive ticks that act on every agent in the database, so files run one at a time.
+  test: { include: ["src/**/*.test.ts"], fileParallelism: false },
 });

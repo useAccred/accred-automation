@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { Notice, PageHeader } from "@/components/status";
 import { TradingForm } from "@/components/trading/trading-form";
 import { requireUser } from "@/lib/auth";
+import { env } from "@/lib/env";
 import { isConnectionKind } from "@/lib/connections/kinds";
 import { microToExact } from "@/lib/credits";
 import { formCatalog, listConnections } from "@/lib/queries";
@@ -30,6 +31,11 @@ export default async function EditTradingAgentPage({ params }: { params: Promise
         title={automation.name}
         description="Saving creates a new version. Anything that lets the agent risk more has to be confirmed separately."
       />
+      {automation.mode !== "live" && (
+        <div className="mb-6">
+          <Notice tone="warning">This agent was created in Paper Mode, which has been retired. It can no longer be changed or run. Create a new agent to trade.</Notice>
+        </div>
+      )}
       {automation.accessRevokedAt && (
         <div className="mb-6">
           <Notice tone="warning">Trading access is revoked. Review the permissions below and approve them to grant access again and restart the agent.</Notice>
@@ -47,7 +53,7 @@ export default async function EditTradingAgentPage({ params }: { params: Promise
           intervalMinutes: automation.intervalMinutes,
           strategies: strategy.kinds,
           instructions: strategy.instructions,
-          mandate,
+          mandate: { ...mandate, mode: "live" },
           permissions: automation.permissions,
           connectionIds: automation.connectionIds.filter((id) => connections.some((connection) => connection.id === id)),
         }}
@@ -56,11 +62,13 @@ export default async function EditTradingAgentPage({ params }: { params: Promise
           name: wallet.name,
           address: wallet.address,
           balanceUsd: balances[index]?.totalUsd ?? null,
+          usdg: balances[index]?.usdg ?? null,
           revoked: wallet.tradingRevokedAt !== null,
         }))}
         connections={connections}
         catalog={catalog}
         topAssets={assets}
+        liveEnabled={env.liveTrading}
         openPositions={open.length}
       />
     </>

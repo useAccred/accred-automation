@@ -353,6 +353,9 @@ export const positions = pgTable(
     status: text("status").$type<"open" | "closed">().notNull().default("open"),
     /** What is still held. */
     quantity: usd("quantity").notNull(),
+    /** Live positions: what is still held in the token's smallest unit, exactly as the chain reported it. */
+    quantityRaw: text("quantity_raw"),
+    tokenDecimals: integer("token_decimals"),
     initialQuantity: usd("initial_quantity").notNull(),
     entryPriceUsd: usd("entry_price_usd").notNull(),
     stopLossPrice: usd("stop_loss_price").notNull(),
@@ -390,10 +393,13 @@ export const executions = pgTable(
     mode: text("mode").$type<"paper" | "live">().notNull(),
     side: text("side").$type<"buy" | "sell">().notNull(),
     reason: text("reason").$type<"entry" | ExitReason>().notNull(),
-    status: text("status").$type<"filled" | "failed">().notNull(),
+    /** "pending" is a live fill that has been reserved, and possibly sent, but not yet confirmed on the chain. */
+    status: text("status").$type<"pending" | "filled" | "failed">().notNull(),
     assetAddress: text("asset_address").notNull(),
     symbol: text("symbol").notNull(),
     quantity: usd("quantity").notNull(),
+    /** Live fills: the token amount in its smallest unit, from the transaction's own logs. */
+    quantityRaw: text("quantity_raw"),
     priceUsd: usd("price_usd").notNull(),
     notionalUsd: usd("notional_usd").notNull(),
     swapFeeUsd: usd("swap_fee_usd").notNull().default(0),
@@ -402,8 +408,11 @@ export const executions = pgTable(
     /** Sells only: gain or loss on the quantity sold, before fees. */
     realizedPnlUsd: usd("realized_pnl_usd").notNull().default(0),
     quote: jsonb("quote").$type<Record<string, unknown>>(),
-    /** Null in paper mode: nothing is signed or sent. */
+    /** Null in paper mode: nothing is signed or sent. Live: saved before the transaction is broadcast. */
     txHash: text("tx_hash"),
+    approveTxHash: text("approve_tx_hash"),
+    /** Why a live fill failed, in words. */
+    error: text("error"),
     mandateId: uuid("mandate_id").notNull().references(() => riskMandates.id),
     mandateVersion: integer("mandate_version").notNull(),
     createdAt: createdAt(),

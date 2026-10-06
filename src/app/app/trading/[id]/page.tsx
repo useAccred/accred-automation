@@ -11,11 +11,11 @@ import { formatCredits } from "@/lib/credits";
 import type { AuditEvent, Execution, Position, RiskEvaluation, TradeProposal } from "@/lib/db/schema";
 import { formatWhen, timeAgo } from "@/lib/format";
 import { fmtPct, fmtPrice, fmtUsd, pnlTone, shortAddress, signedUsd } from "@/lib/trading/format";
-import { LIVE_BLOCKERS, PAPER_REQUIREMENTS } from "@/lib/trading/live";
+import { EXPLORER_URL } from "@/lib/trading/chain";
 import { positionCapUsd, type Mandate } from "@/lib/trading/mandate";
 import { MANDATE_GROUPS, formatMandateValue, intervalLabel } from "@/lib/trading/mandate-fields";
 import { PERMISSIONS } from "@/lib/trading/permissions";
-import { agentDashboard, getTradingAgent, listAudit, listDecisions, listPositions, listRuns } from "@/lib/trading/queries";
+import { agentDashboard, getTradingAgent, listAudit, listDecisions, listPositions, listRuns, listTrades } from "@/lib/trading/queries";
 import { resolveStops } from "@/lib/trading/risk-engine";
 import { STRATEGIES } from "@/lib/trading/strategy";
 import { walletBalances } from "@/lib/trading/wallets";
@@ -68,7 +68,14 @@ function Decision({ proposal, evaluation, entry, mandate }: { proposal: TradePro
           <Line label="Confidence">{proposal.confidence === null ? "—" : `${Math.round(proposal.confidence * 100)}%`}</Line>
           <Line label="Requested position">{fmtUsd(proposal.requestedUsd)}</Line>
           <Line label="Agent allocation">{fmtUsd(mandate.agentAllocationUsd)}</Line>
-          <Line label={entry ? "Entry" : "Price when proposed"}>{fmtPrice(price)}</Line>
+          <Line label={entry?.status === "filled" ? "Entry" : "Price when proposed"}>{fmtPrice(price)}</Line>
+          {entry?.txHash && (
+            <Line label="Transaction">
+              <a href={`${EXPLORER_URL}/tx/${entry.txHash}`} target="_blank" rel="noreferrer" className="text-primary-soft underline-offset-4 hover:underline">
+                {shortAddress(entry.txHash)}
+              </a>
+            </Line>
+          )}
         </div>
         <div>
           <Line label="Stop loss">{price !== null && stops.stopLossPercent !== null ? `${fmtPrice(price * (1 - stops.stopLossPercent / 100))} (-${stops.stopLossPercent}%)` : "none stated"}</Line>
@@ -169,7 +176,7 @@ export default async function TradingAgentPage({ params, searchParams }: { param
   const agent = await getTradingAgent(user.id, (await params).id);
   if (!agent) notFound();
   const { automation, mandate, mandateRow, strategy, wallet } = agent;
-  const [dashboard, open, closed, decisions, runs, events, balance] = await Promise.all([
+  const [dashboard, open, closed, decisions, runs, events, balance, trades] = await Promise.all([
     agentDashboard(agent),
     listPositions(automation.id, "open", 50),
     listPositions(automation.id, "closed", 10),
@@ -177,6 +184,7 @@ export default async function TradingAgentPage({ params, searchParams }: { param
     listRuns(automation.id, 8),
     listAudit(automation.id, 30),
     walletBalances(wallet.address),
+    listTrades(automation.id, 20),
   ]);
   const { portfolio, stats, costs } = dashboard;
   const { notice } = await searchParams;
@@ -187,7 +195,7 @@ export default async function TradingAgentPage({ params, searchParams }: { param
   const netUsd = grossUsd - dashboard.swapFeesUsd - dashboard.networkFeesUsd - llmUsd;
   const running = automation.status === "running";
   const revoked = automation.accessRevokedAt !== null;
-  const { paperDays } = dashboard;
+  const live = automation.mode === "live";
   const cycleActive = runs.some((run) => run.status === "running");
 
   return (
@@ -228,9 +236,20 @@ export default async function TradingAgentPage({ params, searchParams }: { param
         </div>
       </div>
 
+      {!live && (
+        <div className="mb-6">
+          <Notice tone="warning">
+            This agent was created in Paper Mode, which has been retired: it no longer runs, and its figures below are simulated.{" "}
+            <Link href="/app/trading/new" className="underline underline-offset-4">
+              Create a new agent
+            </Link>{" "}
+            to trade on Robinhood Chain.
+          </Notice>
+        </div>
+      )}
       {notice === "no_price" && (
         <div className="mb-6">
-          <Notice tone="warning">A position could not be closed because no current price was available. It stays open under its stop loss. Try again in a moment.</Notice>
+          <Notice tone="warning">A position could not be closed: there was no current price, or the sale did not go through. It stays open under its stop loss. Try again in a moment.</Notice>
         </div>
       )}
       {automation.pauseReason && !running && (
@@ -318,7 +337,7 @@ export default async function TradingAgentPage({ params, searchParams }: { param
       </section>
 
       <dl className="mb-4 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line lg:grid-cols-4">
-        <Stat label="Agent allocation" value={fmtUsd(mandate.agentAllocationUsd)} sub={`wallet ${shortAddress(wallet.address)} holds ${balance ? fmtUsd(balance.totalUsd) : "—"}`} />
+        <Stat label="Agent allocation" value={fmtUsd(mandate.agentAllocationUsd)} sub={`wallet ${shortAddress(wallet.address)} holds ${balance ? `${fmtUsd(balance.usdg)} USDG on-chain` : "— (chain unreadable)"}`} />
         <Stat label="Available capital" value={fmtUsd(portfolio.availableUsd)} sub={mandate.reserveUsd > 0 ? `after a ${fmtUsd(mandate.reserveUsd)} reserve` : `largest position ${fmtUsd(positionCapUsd(mandate))}`} />
         <Stat label="Open exposure" value={fmtUsd(portfolio.openCostUsd)} sub={`${portfolio.openPositions} of ${mandate.maxOpenPositions} positions · limit ${fmtUsd((mandate.agentAllocationUsd * mandate.maxTotalExposurePercent) / 100)}`} />
         <Stat label="Drawdown" value={fmtPct(portfolio.drawdownPercent)} sub={`worst ${fmtPct(automation.maxDrawdownPercent)} · pauses at ${mandate.maxDrawdownPercent}%`} tone={portfolio.drawdownPercent >= mandate.maxDrawdownPercent / 2 ? "text-warning" : ""} />
@@ -327,7 +346,7 @@ export default async function TradingAgentPage({ params, searchParams }: { param
         <Stat label="Realized PnL" value={signedUsd(portfolio.realizedNetUsd)} sub="sold positions, less every fee paid" tone={pnlTone(portfolio.realizedNetUsd)} />
         <Stat label="Unrealized PnL" value={signedUsd(portfolio.unrealizedUsd)} sub="open positions at the last price" tone={pnlTone(portfolio.unrealizedUsd)} />
         <Stat label="Today" value={signedUsd(portfolio.dayNetUsd)} sub={`pauses at -${fmtUsd((mandate.agentAllocationUsd * mandate.dailyLossLimitPercent) / 100)}`} tone={pnlTone(portfolio.dayNetUsd)} />
-        <Stat label="Total PnL" value={signedUsd(total)} sub={automation.mode === "paper" ? "hypothetical: Paper Mode" : "live"} tone={pnlTone(total)} />
+        <Stat label="Total PnL" value={signedUsd(total)} sub={live ? "real funds, from on-chain fills" : "simulated: retired Paper Mode"} tone={pnlTone(total)} />
       </dl>
 
       <section className="mb-8">
@@ -356,6 +375,53 @@ export default async function TradingAgentPage({ params, searchParams }: { param
               <ul className="divide-y divide-line rounded-xl border border-line">
                 {decisions.map((decision) => (
                   <Decision key={decision.proposal.id} proposal={decision.proposal} evaluation={decision.evaluation} entry={decision.entry} mandate={decision.mandate ?? mandate} />
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section>
+            <h2 className="mb-1 text-sm font-medium">Trades</h2>
+            <p className="mb-3 text-xs text-muted">
+              {live ? "Every swap this agent made or attempted, with the transaction behind it. PnL is computed from these." : "Simulated fills."}
+            </p>
+            {trades.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-line-strong p-6 text-center text-[13px] text-muted">No trades yet.</p>
+            ) : (
+              <ul className="divide-y divide-line rounded-xl border border-line">
+                {trades.map((trade) => (
+                  <li key={trade.id} className="flex flex-wrap items-baseline gap-x-4 gap-y-1 px-4 py-2.5 text-[13px]">
+                    <span className={`w-10 font-medium ${trade.side === "buy" ? "text-success" : "text-primary-soft"}`}>{trade.side === "buy" ? "BUY" : "SELL"}</span>
+                    <span className="w-20 font-medium">{trade.symbol}</span>
+                    <span className="min-w-0 flex-1 basis-56 text-xs text-muted">
+                      {trade.status === "filled" ? (
+                        <>
+                          {fmtUsd(trade.notionalUsd)} at {fmtPrice(trade.priceUsd)} · fees {fmtUsd(trade.swapFeeUsd + trade.networkFeeUsd)}
+                          {trade.side === "sell" && (
+                            <>
+                              {" "}
+                              · result <span className={pnlTone(trade.realizedPnlUsd)}>{signedUsd(trade.realizedPnlUsd)}</span>
+                            </>
+                          )}
+                        </>
+                      ) : trade.status === "pending" ? (
+                        <span className="text-warning">Sent, waiting for the chain to confirm · {fmtUsd(trade.notionalUsd)} reserved</span>
+                      ) : (
+                        <span className="text-danger">
+                          Failed{trade.networkFeeUsd > 0 ? ` · ${fmtUsd(trade.networkFeeUsd)} gas paid` : ""}: {trade.error ?? "no tokens moved"}
+                        </span>
+                      )}
+                    </span>
+                    <span className="eyebrow">{trade.reason.replace(/_/g, " ")}</span>
+                    {trade.txHash ? (
+                      <a href={`${EXPLORER_URL}/tx/${trade.txHash}`} target="_blank" rel="noreferrer" className="font-mono text-xs text-primary-soft underline-offset-4 hover:underline">
+                        {shortAddress(trade.txHash)}
+                      </a>
+                    ) : (
+                      <span className="font-mono text-xs text-faint">{trade.mode === "live" ? "not sent" : "simulated"}</span>
+                    )}
+                    <span className="w-16 text-right text-xs text-muted">{timeAgo(trade.createdAt)}</span>
+                  </li>
                 ))}
               </ul>
             )}
@@ -450,11 +516,15 @@ export default async function TradingAgentPage({ params, searchParams }: { param
                 {costs.cycles} · {costs.modelCalls}
               </Line>
             </dl>
-            <p className="mt-3 text-xs text-muted">Paper fees are modelled: a 0.3% pool fee and the chain&apos;s current gas price.</p>
+            <p className="mt-3 text-xs text-muted">
+              {live
+                ? "Every figure comes from the transactions themselves: dollars spent and received, tokens moved, and gas paid. Pool and router fees are inside the fill prices, so they show up in trading PnL, not as a separate line."
+                : "Simulated figures from the retired Paper Mode."}
+            </p>
           </section>
 
           <section className="card p-5 text-[13px]">
-            <p className="eyebrow">Paper results</p>
+            <p className="eyebrow">Results</p>
             <dl className="mt-3">
               <Line label="Closed trades">{stats.closedTrades}</Line>
               <Line label="Win rate">{stats.winRatePercent === null ? "—" : fmtPct(stats.winRatePercent, 0)}</Line>
@@ -480,31 +550,6 @@ export default async function TradingAgentPage({ params, searchParams }: { param
                 </ul>
               </>
             )}
-          </section>
-
-          <section className="card p-5 text-[13px]">
-            <p className="eyebrow">Going live</p>
-            <p className="mt-2 text-xs text-muted">Run Paper Mode, review the results, then explicitly go live. Live Mode is locked for everyone for now.</p>
-            <ul className="mt-3 space-y-1.5 text-xs">
-              {[
-                { done: stats.closedTrades >= PAPER_REQUIREMENTS.closedTrades, text: `${PAPER_REQUIREMENTS.closedTrades} closed paper trades (${stats.closedTrades} so far)` },
-                { done: paperDays >= PAPER_REQUIREMENTS.days, text: `${PAPER_REQUIREMENTS.days} days in Paper Mode (${paperDays} so far)` },
-                { done: false, text: "Live trading enabled on this server" },
-              ].map((item) => (
-                <li key={item.text} className="flex items-baseline gap-2">
-                  <span className={`dot flex-none translate-y-[-2px] ${item.done ? "text-success" : "text-faint"}`} />
-                  {item.text}
-                </li>
-              ))}
-            </ul>
-            <details className="mt-3 text-xs text-muted">
-              <summary className="cursor-pointer text-primary-soft">Why Live Mode is locked</summary>
-              <ul className="mt-2 list-disc space-y-1 pl-4">
-                {LIVE_BLOCKERS.map((blocker) => (
-                  <li key={blocker}>{blocker}</li>
-                ))}
-              </ul>
-            </details>
           </section>
 
           <section className="card p-5 text-[13px]">

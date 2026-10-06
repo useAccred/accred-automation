@@ -59,6 +59,14 @@ export interface RiskQuote {
   simulation: { ok: boolean; detail: string };
 }
 
+/** What a live agent's wallet really holds, read from the chain. */
+export interface RiskWallet {
+  /** USDG in the wallet, in dollars. */
+  usdg: number;
+  /** Whether the wallet holds enough ETH to pay for the trade's transactions. */
+  hasGas: boolean;
+}
+
 export interface RiskInputs {
   now: number;
   /** Weekday (0 is Sunday) and hour in the agent's timezone. */
@@ -70,6 +78,8 @@ export interface RiskInputs {
   market: RiskMarket | null;
   /** Null before a quote exists. The final stage requires one. */
   quote: RiskQuote | null;
+  /** Live Mode only: the wallet's real balances. A live trade is refused when this is missing. */
+  wallet?: RiskWallet | null;
 }
 
 export interface RiskResult {
@@ -129,7 +139,17 @@ function allocationAvailable({ proposal, portfolio }: RiskInputs): Verdict {
   if (!ok(proposal.requestedUsd) || proposal.requestedUsd <= 0) return fail("The requested size is not a positive amount");
   if (!ok(portfolio.availableUsd)) return fail("Available capital could not be determined");
   const detail = `Requested ${usd(proposal.requestedUsd)} · available ${usd(portfolio.availableUsd)} of ${usd(portfolio.allocationUsd)} allocation`;
-  return proposal.requestedUsd <= portfolio.availableUsd + EPSILON ? detail : fail(detail);
+  if (proposal.requestedUsd > portfolio.availableUsd + EPSILON) return fail(detail);
+  return detail;
+}
+
+/** Live Mode: the allocation is a cap, and the wallet must really hold the money and the gas. */
+function walletFunded({ agent, proposal, wallet }: RiskInputs): Verdict | null {
+  if (agent.mode !== "live") return null;
+  if (!wallet || !ok(wallet.usdg)) return fail("The wallet's balance could not be read from the chain");
+  if (proposal.requestedUsd > wallet.usdg + EPSILON) return fail(`Requested ${usd(proposal.requestedUsd)} · the wallet holds ${usd(wallet.usdg)} of USDG`);
+  if (wallet.hasGas !== true) return fail("The wallet does not hold enough ETH to pay the network fee");
+  return null;
 }
 
 function positionSize({ proposal, mandate }: RiskInputs): Verdict {
@@ -316,7 +336,10 @@ export function evaluateRisk(inputs: RiskInputs, stage: "pre_trade" | "final"): 
   const { stopLossPercent, takeProfitPercent } = resolveStops(inputs.mandate, inputs.proposal);
   const run: Array<() => Verdict> = [
     () => tradingEnabled(inputs),
-    () => allocationAvailable(inputs),
+    () => {
+      const allocation = allocationAvailable(inputs);
+      return typeof allocation === "string" ? (walletFunded(inputs) ?? allocation) : allocation;
+    },
     () => positionSize(inputs),
     () => totalExposure(inputs),
     () => openPositions(inputs),

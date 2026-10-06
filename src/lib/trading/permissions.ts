@@ -6,7 +6,7 @@ export const PERMISSIONS = {
   PROPOSE_TRADE: { label: "Propose trades", detail: "The model may suggest a trade. A suggestion moves nothing by itself.", sensitive: false },
   EXECUTE_TRADE: {
     label: "Open positions",
-    detail: "A proposal that passes every risk check is executed inside the allocation. In Paper Mode nothing is signed.",
+    detail: "A proposal that passes every risk check is executed as a real swap, inside the allocation, after it has been simulated on the chain.",
     sensitive: true,
   },
   CLOSE_POSITION: {

@@ -709,4 +709,291 @@ describe.skipIf(!url)("wallet service (database)", () => {
       expect((await auditRows(userId)).map((event) => event.type)).not.toContain("wallet.removed");
     }, 60_000);
   });
+
+  // The trade signer is the only way the engine reaches a key. These tests pin
+  // its policy: two switches before a signer exists, and a signer that can only
+  // ever name the swap router. Nested here so it shares the database gate, the
+  // fetch stub, the fake chain and the per-test user cleanup above.
+  describe("tradeSigner", () => {
+    const UNKNOWN_WALLET = "00000000-0000-4000-8000-000000000000";
+    const liveTradingBefore = process.env.LIVE_TRADING;
+
+    /** Sets LIVE_TRADING for the current test, or unsets it. Undone in afterEach. */
+    function liveTrading(value?: string) {
+      if (value === undefined) delete process.env.LIVE_TRADING;
+      else process.env.LIVE_TRADING = value;
+    }
+
+    afterEach(() => {
+      liveTrading(liveTradingBefore);
+    });
+
+    /**
+     * The file's fake chain with a token that answers `approve` (the base fake
+     * only knows balanceOf and transfer). Everything else, including recording
+     * what is broadcast, is delegated to the base fake. `methods` lists every
+     * RPC method in order, the simulated approvals included.
+     */
+    function approvingChain(holder: string, options: FakeChainOptions = {}) {
+      const fake = fakeChain(holder, options);
+      const methods: string[] = [];
+      const simulated: { token: string; from: string; spender: string; amount: bigint }[] = [];
+      const request = async ({ method, params }: { method: string; params?: unknown }): Promise<unknown> => {
+        methods.push(method);
+        const tx = ((Array.isArray(params) ? params[0] : undefined) ?? {}) as { to?: string; from?: string; data?: Hex };
+        if (method === "eth_call" && tx.data?.startsWith("0x095ea7b3")) {
+          const call = decodeFunctionData({ abi: erc20Abi, data: tx.data });
+          if (call.functionName === "approve") {
+            simulated.push({ token: (tx.to ?? "").toLowerCase(), from: (tx.from ?? "").toLowerCase(), spender: call.args[0].toLowerCase(), amount: call.args[1] });
+            return encodeAbiParameters([{ type: "bool" }], [true]);
+          }
+        }
+        return fake.clients.public.request({ method, params } as never);
+      };
+      const transport = custom({ request }, { retryCount: 0 });
+      const client = createPublicClient({ chain: chain.robinhoodChain, transport }) as PublicClient;
+      return { sent: fake.sent, methods, simulated, clients: { public: client, transport } };
+    }
+
+    it('refuses unless LIVE_TRADING is "on", before the wallet is even looked up', async () => {
+      const { wallet, address } = await fundedWallet();
+      const fake = fakeChain(address, { eth: parseEther("1") });
+
+      for (const value of [undefined, "", "off", "ON", "On", "true", "1", "yes", "on!", "o n"]) {
+        liveTrading(value);
+        for (const id of [wallet.id, UNKNOWN_WALLET]) {
+          const error = await failure(() => wallets.tradeSigner(id, fake.clients));
+          expect(error, `LIVE_TRADING=${JSON.stringify(value)}`).toBeInstanceOf(wallets.WalletError);
+          expect((error as Error).message, `LIVE_TRADING=${JSON.stringify(value)}`).toMatch(/switched off/i);
+        }
+      }
+      expect(fake.methods).toEqual([]);
+      expect(fake.sent).toHaveLength(0);
+
+      // The same wallet opens once the switch is on.
+      liveTrading("on");
+      expect((await wallets.tradeSigner(wallet.id, fake.clients)).address).toBe(address);
+      expect(fake.methods).toEqual([]);
+      expect(fetchStub).not.toHaveBeenCalled();
+    });
+
+    it("refuses a wallet whose trading authority is revoked, and opens again once restored", async () => {
+      const { userId, wallet, address } = await fundedWallet();
+      const fake = fakeChain(address, { eth: parseEther("1") });
+      liveTrading("on");
+
+      await wallets.setTradingAuthority(userId, wallet.id, false);
+      expect((await walletRow(wallet.id))!.tradingRevokedAt).toBeInstanceOf(Date);
+      const error = await failure(() => wallets.tradeSigner(wallet.id, fake.clients));
+      expect(error).toBeInstanceOf(wallets.WalletError);
+      expect((error as Error).message).toMatch(/revoked/i);
+      expect(fake.methods).toEqual([]);
+      expect(fake.sent).toHaveLength(0);
+
+      await wallets.setTradingAuthority(userId, wallet.id, true);
+      expect((await walletRow(wallet.id))!.tradingRevokedAt).toBeNull();
+      expect((await wallets.tradeSigner(wallet.id, fake.clients)).address).toBe(address);
+    });
+
+    it("refuses an unknown wallet id", async () => {
+      const { address } = await fundedWallet();
+      const fake = fakeChain(address, { eth: parseEther("1") });
+      liveTrading("on");
+
+      const error = await failure(() => wallets.tradeSigner(UNKNOWN_WALLET, fake.clients));
+      expect(error).toBeInstanceOf(wallets.WalletError);
+      expect((error as Error).message).toMatch(/no longer exists/i);
+      expect(fake.methods).toEqual([]);
+    });
+
+    it("refuses when the stored key does not belong to the wallet's address", async () => {
+      const { wallet, address } = await fundedWallet();
+      const { db, tradingWallets } = dbModule;
+      await db.update(tradingWallets).set({ keyEnc: crypto.encryptWalletKey(generatePrivateKey()) }).where(orm.eq(tradingWallets.id, wallet.id));
+      const fake = fakeChain(address, { eth: parseEther("1") });
+      liveTrading("on");
+
+      const error = await failure(() => wallets.tradeSigner(wallet.id, fake.clients));
+      expect(error).toBeInstanceOf(wallets.WalletError);
+      expect((error as Error).message).toMatch(/nothing was signed/i);
+      expect(fake.methods).toEqual([]);
+    });
+
+    it("exposes only address, approveExact and signRouterCall: no way to choose a destination, and no key", async () => {
+      const { privateKey, wallet, address } = await fundedWallet();
+      const fake = fakeChain(address);
+      liveTrading("on");
+
+      const signer = await wallets.tradeSigner(wallet.id, fake.clients);
+
+      expect(Object.keys(signer).sort()).toEqual(["address", "approveExact", "signRouterCall"]);
+      // Nothing hidden either: no non-enumerable or symbol-keyed members, and a plain object behind it.
+      expect(Reflect.ownKeys(signer).sort()).toEqual(["address", "approveExact", "signRouterCall"]);
+      expect(Object.getPrototypeOf(signer)).toBe(Object.prototype);
+      expect(signer.address).toBe(address);
+      expect(typeof signer.approveExact).toBe("function");
+      expect(typeof signer.signRouterCall).toBe("function");
+      // (token, amount) and ({ data, gas }): neither takes a spender or a target.
+      expect(signer.approveExact).toHaveLength(2);
+      expect(signer.signRouterCall).toHaveLength(1);
+      expect(JSON.stringify(signer).toLowerCase()).not.toContain(privateKey.slice(2).toLowerCase());
+      expect(fake.methods).toEqual([]);
+    });
+
+    it("approveExact sends approve(SWAP_ROUTER, amount) to the token, signed by the wallet", async () => {
+      const { wallet, address } = await fundedWallet();
+      const fake = approvingChain(address, { eth: parseEther("1"), gasPrice: 3n * GWEI });
+      liveTrading("on");
+      const signer = await wallets.tradeSigner(wallet.id, fake.clients);
+
+      const approvals = [
+        { token: chain.USDG.address as Hex, amount: 125_500_000n },
+        { token: randomAddress(), amount: 1n },
+        { token: chain.WETH.address as Hex, amount: 2n ** 256n - 1n },
+      ];
+      for (const [index, { token, amount }] of approvals.entries()) {
+        const hash = await signer.approveExact(token, amount);
+
+        expect(fake.sent).toHaveLength(index + 1);
+        const raw = fake.sent[index]!;
+        const { tx, signer: signedBy } = await decodeSent(raw);
+        expect(tx.to?.toLowerCase()).toBe(token.toLowerCase());
+        expect(tx.to?.toLowerCase()).not.toBe(chain.SWAP_ROUTER);
+        expect(tx.value ?? 0n).toBe(0n);
+        expect(tx.chainId).toBe(4663);
+        expect(tx.gasPrice).toBe(6n * GWEI);
+        const call = decodeFunctionData({ abi: erc20Abi, data: tx.data! });
+        expect(call.functionName).toBe("approve");
+        expect((call.args![0] as string).toLowerCase()).toBe(chain.SWAP_ROUTER);
+        expect(call.args![1]).toBe(amount);
+        expect(signedBy).toBe(address);
+        expect(hash).toBe(keccak256(raw));
+
+        // What was simulated is what was sent: same token, same holder, same spender, same amount.
+        expect(fake.simulated[index]).toEqual({ token: token.toLowerCase(), from: address.toLowerCase(), spender: chain.SWAP_ROUTER, amount });
+      }
+      expect(fake.simulated).toHaveLength(approvals.length);
+      // Each approval was simulated before anything was broadcast.
+      expect(fake.methods.indexOf("eth_call")).toBeGreaterThanOrEqual(0);
+      expect(fake.methods.indexOf("eth_call")).toBeLessThan(fake.methods.indexOf("eth_sendRawTransaction"));
+      expect(fetchStub).not.toHaveBeenCalled();
+    });
+
+    it("approveExact refuses a zero or negative amount before touching the chain", async () => {
+      const { wallet, address } = await fundedWallet();
+      const fake = approvingChain(address, { eth: parseEther("1") });
+      liveTrading("on");
+      const signer = await wallets.tradeSigner(wallet.id, fake.clients);
+
+      for (const amount of [0n, -1n]) {
+        const error = await failure(() => signer.approveExact(chain.USDG.address, amount));
+        expect(error, String(amount)).toBeInstanceOf(wallets.WalletError);
+      }
+      expect(fake.methods).toEqual([]);
+      expect(fake.sent).toHaveLength(0);
+      expect(fake.simulated).toHaveLength(0);
+    });
+
+    it("approveExact sends nothing when the approval cannot be simulated", async () => {
+      const { privateKey, wallet, address } = await fundedWallet();
+      // The base fake rejects `approve` on USDG and returns no data for any other token.
+      const fake = fakeChain(address, { eth: parseEther("1") });
+      liveTrading("on");
+      const signer = await wallets.tradeSigner(wallet.id, fake.clients);
+
+      for (const token of [chain.USDG.address as Hex, randomAddress()]) {
+        const error = await failure(() => signer.approveExact(token, 1_000_000n));
+        expect(error, token).toBeInstanceOf(Error);
+        expect(String((error as Error).message)).not.toContain(privateKey.slice(2));
+      }
+      expect(fake.sent).toHaveLength(0);
+      expect(fake.methods).not.toContain("eth_sendRawTransaction");
+    });
+
+    it("signRouterCall signs a legacy call to the swap router with no ETH, and broadcasts nothing", async () => {
+      const { wallet, address } = await fundedWallet();
+      const fake = fakeChain(address, { eth: parseEther("1"), gasPrice: 3n * GWEI });
+      liveTrading("on");
+      const signer = await wallets.tradeSigner(wallet.id, fake.clients);
+      const data = `0x4630a0d8${generatePrivateKey().slice(2)}${"00".repeat(31)}2a` as Hex;
+      const gas = 412_345n;
+
+      const signed = await signer.signRouterCall({ data, gas });
+
+      // The nonce comes back with the signature so the caller can record it before broadcasting.
+      expect(Object.keys(signed).sort()).toEqual(["hash", "nonce", "raw"]);
+      expect(signed.nonce).toBe(7);
+      const tx = parseTransaction(signed.raw);
+      expect(tx.type).toBe("legacy");
+      expect(tx.to?.toLowerCase()).toBe(chain.SWAP_ROUTER.toLowerCase());
+      expect(tx.value ?? 0n).toBe(0n);
+      expect(tx.chainId).toBe(4663);
+      expect(tx.chainId).toBe(chain.CHAIN_ID);
+      expect(tx.data).toBe(data);
+      expect(tx.gas).toBe(gas);
+      // The pending nonce from the chain, and twice the going gas price as a ceiling.
+      expect(tx.nonce).toBe(7);
+      expect(tx.gasPrice).toBe(6n * GWEI);
+      expect(signed.hash).toBe(keccak256(signed.raw));
+      expect(await recoverTransactionAddress({ serializedTransaction: signed.raw as TransactionSerialized })).toBe(address);
+
+      // Signing reads the nonce and the gas price and nothing else: no broadcast, no HTTP.
+      expect(fake.sent).toHaveLength(0);
+      expect(fake.methods).not.toContain("eth_sendRawTransaction");
+      expect([...fake.methods].sort()).toEqual(["eth_gasPrice", "eth_getTransactionCount"]);
+      expect(fetchStub).not.toHaveBeenCalled();
+    });
+
+    it("signRouterCall ignores a destination or ETH value smuggled into the call", async () => {
+      const { wallet, address } = await fundedWallet();
+      const fake = fakeChain(address, { eth: parseEther("1") });
+      liveTrading("on");
+      const signer = await wallets.tradeSigner(wallet.id, fake.clients);
+      const attacker = randomAddress();
+      const smuggled = { data: "0xdeadbeef", gas: 100_000n, to: attacker, value: parseEther("1"), chainId: 1, nonce: 0, type: "eip1559" };
+
+      const signed = await signer.signRouterCall(smuggled as unknown as { data: Hex; gas: bigint });
+
+      const tx = parseTransaction(signed.raw);
+      expect(tx.to?.toLowerCase()).toBe(chain.SWAP_ROUTER.toLowerCase());
+      expect(tx.to?.toLowerCase()).not.toBe(attacker.toLowerCase());
+      expect(tx.value ?? 0n).toBe(0n);
+      expect(tx.chainId).toBe(4663);
+      expect(tx.type).toBe("legacy");
+      expect(tx.nonce).toBe(7);
+      expect(tx.data).toBe("0xdeadbeef");
+      expect(signed.raw.toLowerCase()).not.toContain(attacker.slice(2).toLowerCase());
+      expect(fake.sent).toHaveLength(0);
+    });
+
+    // Both switches are read again before every signature. A signer that is already open stops signing the
+    // moment the wallet is revoked or LIVE_TRADING is turned off, so a kill switch flipped mid-trade holds.
+    it("checks both switches again at every signature", async () => {
+      const { userId, wallet, address } = await fundedWallet();
+      const fake = approvingChain(address, { eth: parseEther("1") });
+      liveTrading("on");
+      const signer = await wallets.tradeSigner(wallet.id, fake.clients);
+      // While both are on, the open signer works.
+      const signed = await signer.signRouterCall({ data: "0xdeadbeef", gas: 100_000n });
+      expect(await recoverTransactionAddress({ serializedTransaction: signed.raw as TransactionSerialized })).toBe(address);
+
+      // Wallet authority revoked: nothing more is signed or sent by the signer that was already open.
+      await wallets.setTradingAuthority(userId, wallet.id, false);
+      expect(await failure(() => signer.signRouterCall({ data: "0xdeadbeef", gas: 100_000n }))).toBeInstanceOf(wallets.WalletError);
+      expect(await failure(() => signer.approveExact(chain.USDG.address, 1n))).toBeInstanceOf(wallets.WalletError);
+      expect(fake.sent).toHaveLength(0);
+
+      // Authority restored but the server switch off: still nothing.
+      await wallets.setTradingAuthority(userId, wallet.id, true);
+      liveTrading(undefined);
+      expect(await failure(() => signer.signRouterCall({ data: "0xdeadbeef", gas: 100_000n }))).toBeInstanceOf(wallets.WalletError);
+      expect(await failure(() => signer.approveExact(chain.USDG.address, 1n))).toBeInstanceOf(wallets.WalletError);
+      expect(fake.sent).toHaveLength(0);
+
+      // Both back on: the same signer works again.
+      liveTrading("on");
+      await signer.approveExact(chain.USDG.address, 1n);
+      expect(fake.sent).toHaveLength(1);
+    });
+  });
 });

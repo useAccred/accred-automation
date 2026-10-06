@@ -66,7 +66,7 @@ export default async function WalletsPage({ searchParams }: { searchParams: Prom
                     { label: "Wallet balance", value: balance ? fmtUsd(balance.totalUsd) : "Unavailable", sub: balance ? "live from Robinhood Chain" : "the chain could not be read" },
                     { label: "ETH", value: balance ? balance.eth.toFixed(5) : "—", sub: balance ? fmtUsd(balance.eth * balance.ethUsd) : "" },
                     { label: "USDG", value: balance ? balance.usdg.toFixed(2) : "—", sub: "dollar stablecoin" },
-                    { label: "Agent allocation", value: using.length ? fmtUsd(allocated) : "None", sub: using.length ? `${using.length} agent${using.length === 1 ? "" : "s"} · paper` : "no agent uses this wallet" },
+                    { label: "Agent allocation", value: using.length ? fmtUsd(allocated) : "None", sub: using.length ? `${using.length} agent${using.length === 1 ? "" : "s"}` : "no agent uses this wallet" },
                   ].map((stat) => (
                     <div key={stat.label} className="bg-card p-3">
                       <dt className="eyebrow">{stat.label}</dt>
@@ -86,7 +86,7 @@ export default async function WalletsPage({ searchParams }: { searchParams: Prom
                     <p className="eyebrow mb-3">Deposit</p>
                     <CopyField value={wallet.address} label="Deposit address" />
                     <p className="hint">
-                      Send ETH (for network fees) or USDG on Robinhood Chain (chain ID 4663) to this address. Funds sent on another network cannot be recovered. Paper Mode needs no deposit.
+                      Send ETH (for network fees) or USDG on Robinhood Chain (chain ID 4663) to this address. Funds sent on another network cannot be recovered. Agents buy positions with the USDG here and pay network fees in ETH.
                     </p>
                   </div>
                   <details open={withdraw === wallet.id}>

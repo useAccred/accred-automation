@@ -178,7 +178,17 @@ describe("check 1: trading enabled", () => {
   ])("fails: %s", (_name, patch) => expectFail(1, patch));
 
   it("passes a live agent when live is enabled, and inside a window that wraps midnight", () => {
-    expectPass((i) => void ((i.agent.mode = "live"), (i.mandate.mode = "live"), (i.agent.liveEnabled = true)));
+    const live = (i: RiskInputs) => void ((i.agent.mode = "live"), (i.mandate.mode = "live"), (i.agent.liveEnabled = true));
+    expectPass((i) => void (live(i), (i.wallet = { usdg: 5000, hasGas: true })));
+    // A live trade must be covered by what the wallet really holds. An unreadable balance fails closed.
+    expectFail(2, live);
+    expectFail(2, (i) => void (live(i), (i.wallet = null)));
+    expectFail(2, (i) => void (live(i), (i.wallet = { usdg: NaN, hasGas: true })));
+    expectFail(2, (i) => void (live(i), (i.wallet = { usdg: i.proposal.requestedUsd - 0.01, hasGas: true })));
+    expectPass((i) => void (live(i), (i.wallet = { usdg: i.proposal.requestedUsd, hasGas: true })));
+    expectFail(2, (i) => void (live(i), (i.wallet = { usdg: 5000, hasGas: false })));
+    // Paper agents never look at a wallet.
+    expectPass((i) => void (i.wallet = null));
     for (const hour of [22, 23, 0, 4]) expectPass((i) => void ((i.clock.hour = hour), (i.mandate.tradingHours = { enabled: true, startHour: 22, endHour: 4, days: [3] })));
     expectFail(1, (i) => void ((i.clock.hour = 5), (i.mandate.tradingHours = { enabled: true, startHour: 22, endHour: 4, days: [3] })));
   });

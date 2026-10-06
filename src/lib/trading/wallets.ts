@@ -1,18 +1,23 @@
 import { and, eq } from "drizzle-orm";
-import { createWalletClient, erc20Abi, formatEther, formatUnits, getAddress, isAddress, parseEther, parseUnits, type Hex, type PublicClient, type Transport } from "viem";
+import { createWalletClient, erc20Abi, formatEther, formatUnits, getAddress, isAddress, keccak256, parseEther, parseUnits, type Hex, type PublicClient, type Transport } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { decryptWalletKey, encryptWalletKey } from "../crypto";
 import { db, tradingAutomations, tradingWallets, type TradingWallet } from "../db";
 import { audit } from "./audit";
-import { USDG, ethPriceUsd, publicClient, robinhoodChain, rpcTransport } from "./chain";
+import { env } from "../env";
+import { CHAIN_ID, SWAP_ROUTER, USDG, ethPriceUsd, publicClient, robinhoodChain, rpcTransport } from "./chain";
 
 /**
  * The wallet service. It is the only code that ever holds a signing key in the
- * clear, and only for the length of a withdrawal the signed-in user asked for.
+ * clear. A key is used for exactly two things:
+ *
+ * - a withdrawal the signed-in user asked for (`withdraw`), and
+ * - live trades, through `tradeSigner`, which can only approve the pinned swap
+ *   router and call it with no ETH attached. It cannot send funds anywhere else.
  *
  * Keys never leave this module: they are not returned to the browser, not put
  * in a prompt, not written to a log or the audit trail, and not reachable from
- * any agent tool. The trading engine does not import this file.
+ * any agent tool or from the model.
  */
 
 export class WalletError extends Error {}
@@ -205,4 +210,63 @@ export async function withdraw(input: WithdrawInput, clients: { public: PublicCl
     data: { asset: input.asset, to, amount: sent, txHash: hash },
   });
   return { hash, amount: sent };
+}
+
+/**
+ * What the trading engine is allowed to sign with a wallet. There is no method
+ * here that takes a destination: the spender and the call target are always the
+ * pinned swap router, and no ETH can be attached.
+ */
+export interface TradeSigner {
+  address: Hex;
+  /** Sends an approval of exactly `amount` of `token` to the swap router. Returns the transaction hash. */
+  approveExact(token: Hex, amount: bigint): Promise<Hex>;
+  /** Signs a call to the swap router. Nothing is sent: the caller records the hash and nonce first, then broadcasts `raw`. */
+  signRouterCall(call: { data: Hex; gas: bigint }): Promise<{ raw: Hex; hash: Hex; nonce: number }>;
+}
+
+/**
+ * Opens a trade signer for a wallet. Refuses unless live trading is switched on
+ * for this server and the wallet's trading authority has not been revoked. Both
+ * switches are read again before every signature, so one that is flipped in the
+ * middle of a trade stops the next signature of that trade.
+ */
+export async function tradeSigner(walletId: string, clients: { public: PublicClient; transport: Transport } = { public: publicClient(), transport: rpcTransport() }): Promise<TradeSigner> {
+  if (!env.liveTrading) throw new WalletError("Live trading is switched off on this server.");
+  const [wallet] = await db.select().from(tradingWallets).where(eq(tradingWallets.id, walletId));
+  if (!wallet) throw new WalletError("This wallet no longer exists.");
+  if (wallet.tradingRevokedAt) throw new WalletError("Trading authority is revoked for this wallet.");
+  const account = privateKeyToAccount(decryptWalletKey(wallet.keyEnc) as Hex);
+  if (account.address.toLowerCase() !== wallet.address) throw new WalletError("The stored key does not match this wallet. Nothing was signed.");
+  const signer = createWalletClient({ account, chain: robinhoodChain, transport: clients.transport });
+
+  async function stillAllowed(): Promise<void> {
+    if (!env.liveTrading) throw new WalletError("Live trading is switched off on this server.");
+    const [current] = await db.select({ revokedAt: tradingWallets.tradingRevokedAt }).from(tradingWallets).where(eq(tradingWallets.id, walletId));
+    if (!current) throw new WalletError("This wallet no longer exists.");
+    if (current.revokedAt) throw new WalletError("Trading authority is revoked for this wallet.");
+  }
+
+  return {
+    address: account.address,
+    async approveExact(token, amount) {
+      if (amount <= 0n) throw new WalletError("Nothing to approve.");
+      await stillAllowed();
+      try {
+        const gasPrice = (await clients.public.getGasPrice()) * 2n;
+        const { request } = await clients.public.simulateContract({ account, address: token, abi: erc20Abi, functionName: "approve", args: [SWAP_ROUTER, amount], gasPrice });
+        return await signer.writeContract(request);
+      } catch (error) {
+        // The underlying error can quote request details, so only its short form is kept.
+        const short = (error as { shortMessage?: string }).shortMessage;
+        throw new WalletError(`The approval was not sent: ${(short ?? "the chain rejected or could not simulate it").replace(/\.+$/, "")}.`);
+      }
+    },
+    async signRouterCall({ data, gas }) {
+      await stillAllowed();
+      const [nonce, gasPrice] = await Promise.all([clients.public.getTransactionCount({ address: account.address, blockTag: "pending" }), clients.public.getGasPrice()]);
+      const raw = await account.signTransaction({ to: SWAP_ROUTER, data, value: 0n, gas, gasPrice: gasPrice * 2n, nonce, chainId: CHAIN_ID, type: "legacy" });
+      return { raw, hash: keccak256(raw), nonce };
+    },
+  };
 }

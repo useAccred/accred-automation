@@ -15,7 +15,7 @@ const PRINCIPLES = [
   { title: "A hard allocation", body: "You set the most the agent may deploy. The rest of the wallet is out of its reach." },
   { title: "Limits the model cannot move", body: "Seventeen risk checks run in the backend before every trade. One failure rejects it." },
   { title: "Every decision shown", body: "Executed or rejected, each proposal is listed with the checks it passed and failed." },
-  { title: "Paper first", body: "The same strategy and risk engine on live market data, with nothing signed." },
+  { title: "Simulated before signed", body: "Every swap is run on the chain from the wallet first. It is only signed if that passes." },
   { title: "Stops that do not sleep", body: "Stop loss and take profit are enforced by a monitor that needs no model." },
   { title: "Yours to stop", body: "Pause, close everything or revoke access at any moment." },
 ];
@@ -48,9 +48,9 @@ export default async function TradingPage() {
         <>
           <div className="card p-6 sm:p-8">
             <p className="eyebrow mb-3">Start here</p>
-            <h2 className="text-lg font-semibold tracking-tight">Run your first agent in Paper Mode</h2>
+            <h2 className="text-lg font-semibold tracking-tight">Set up your first agent</h2>
             <p className="mt-1.5 max-w-xl text-sm text-muted">
-              Create a dedicated wallet, set an allocation and a risk mandate, pick the assets, and let the agent trade on paper. No funds are needed and nothing is signed.
+              Create a dedicated wallet, fund it with USDG and a little ETH, set an allocation and a risk mandate, and pick the assets. The agent then trades for real on Robinhood Chain, inside those limits.
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <Link href={wallets.length ? "/app/trading/new" : "/app/trading/wallets"} className="btn btn-primary">

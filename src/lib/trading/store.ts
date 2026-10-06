@@ -1,4 +1,4 @@
-import { and, eq, gte, sql, sum } from "drizzle-orm";
+import { and, eq, gte, isNull, sql, sum } from "drizzle-orm";
 import {
   db,
   executions,
@@ -17,7 +17,7 @@ import {
   type User,
 } from "../db";
 import { audit, type AuditEntry, type Executor } from "./audit";
-import { LIVE_TRADING_AVAILABLE } from "./live";
+import { env } from "../env";
 import type { Mandate } from "./mandate";
 import { computePortfolio, type PortfolioState } from "./portfolio";
 import type { RiskAgent } from "./risk-engine";
@@ -61,7 +61,7 @@ export function riskAgent(automation: TradingAutomation, wallet: TradingWallet):
     accessRevoked: automation.accessRevokedAt !== null,
     walletRevoked: wallet.tradingRevokedAt !== null,
     permissions: automation.permissions,
-    liveEnabled: LIVE_TRADING_AVAILABLE,
+    liveEnabled: env.liveTrading,
   };
 }
 
@@ -69,7 +69,7 @@ export function riskAgent(automation: TradingAutomation, wallet: TradingWallet):
 const FILL_WINDOW_MS = 8 * 86_400_000;
 
 export async function loadPortfolio(executor: Executor, automation: TradingAutomation, mandate: Mandate, now: number): Promise<PortfolioState> {
-  const [held, fills] = await Promise.all([
+  const [held, fills, [orphan]] = await Promise.all([
     executor
       .select({
         status: positions.status,
@@ -91,9 +91,16 @@ export async function loadPortfolio(executor: Executor, automation: TradingAutom
         swapFeeUsd: executions.swapFeeUsd,
         networkFeeUsd: executions.networkFeeUsd,
         realizedPnlUsd: executions.realizedPnlUsd,
+        notionalUsd: executions.notionalUsd,
+        assetAddress: executions.assetAddress,
       })
       .from(executions)
       .where(and(eq(executions.automationId, automation.id), gte(executions.createdAt, new Date(now - FILL_WINDOW_MS)))),
+    // Fees of live entries that failed before a position existed, for all time.
+    executor
+      .select({ fees: sql<number>`coalesce(sum(${executions.networkFeeUsd}), 0)::float8` })
+      .from(executions)
+      .where(and(eq(executions.automationId, automation.id), eq(executions.status, "failed"), isNull(executions.positionId))),
   ]);
   return computePortfolio({
     mandate,
@@ -103,6 +110,7 @@ export async function loadPortfolio(executor: Executor, automation: TradingAutom
     fills,
     peakEquityUsd: automation.peakEquityUsd,
     streakResetAt: automation.breakerResetAt,
+    orphanFeesUsd: orphan?.fees ?? 0,
   });
 }
 

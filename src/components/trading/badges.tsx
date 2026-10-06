@@ -19,7 +19,7 @@ export function AgentBadges({ mode, status, pausedBy }: { mode: "paper" | "live"
         : { label: "Stopped", tone: TONES.danger, pulse: false };
   return (
     <span className="flex flex-none items-center gap-1.5">
-      <span className={`badge ${mode === "paper" ? TONES.blue : TONES.warning}`}>{mode === "paper" ? "Paper" : "Live"}</span>
+      <span className={`badge ${mode === "paper" ? TONES.muted : TONES.blue}`}>{mode === "paper" ? "Paper · retired" : "Live · mainnet"}</span>
       <span className={`badge ${state.tone}`}>
         <span className={`dot ${state.pulse ? "pulse" : ""}`} />
         {state.label}

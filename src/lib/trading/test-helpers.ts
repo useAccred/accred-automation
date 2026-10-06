@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type { ChatCompletion, Model } from "accred";
+import { SWAP_ROUTER, USDG } from "./chain";
 import type { EngineDeps } from "./engine";
+import { buildLiveQuote, type Fill, type LiveVenue } from "./live-venue";
 import type { Mandate } from "./mandate";
 import type { MarketSnapshot } from "./market-data";
 import type { StrategyKind } from "./strategy";
@@ -17,6 +19,8 @@ export const TEST_APP_SECRET = "trading-integration-test-secret-0123456789abcdef
 export const randomAddress = () => `0x${randomBytes(20).toString("hex")}`;
 
 export async function loadApp() {
+  // The retired Paper Mode survives only as a fixture for these tests.
+  process.env.TRADING_PAPER_FIXTURE ??= "on";
   const orm = await import("drizzle-orm");
   return {
     ...(await import("../db")),
@@ -159,6 +163,149 @@ export interface FakeState {
   /** Idempotency keys of every model call. */
   calls: string[];
   notes: string[];
+  venue: FakeChain;
+}
+
+/**
+ * A stand-in for Robinhood Chain and the swap router, for the live-trading
+ * tests. It keeps balances, fills swaps at the test's market price less an
+ * impact, and can be told to fail in each of the ways a real swap can.
+ */
+export interface FakeChain {
+  /** USDG and ETH per wallet address. A wallet that is not listed holds nothing. */
+  usdg: Map<string, number>;
+  ethWei: Map<string, bigint>;
+  /** Token units per `${wallet}:${token}`. Tokens have 18 decimals here. */
+  tokens: Map<string, bigint>;
+  /** How far from the market price a swap fills, as a percentage. */
+  impactPercent: number;
+  gasUsd: number;
+  /** Balances cannot be read. */
+  unreadable: boolean;
+  /** The next swaps fail this way: in simulation, as a reverted transaction, or sent with no confirmation. */
+  fail: "simulate" | "revert" | "uncertain" | null;
+  /** Every swap that was signed, by hash, with what it did. `inspect` reads from here. */
+  sent: Map<string, Fill>;
+  /** What `nonceUsed` answers: whether the wallet has since confirmed a transaction in an unconfirmed swap's place. */
+  nonceConsumed: boolean;
+  /** Hashes in the order they were signed, and the slippage limit each quote was asked for. */
+  signed: string[];
+  slippageAsked: number[];
+}
+
+const TOKEN_DECIMALS = 18;
+const unit = 10n ** BigInt(TOKEN_DECIMALS);
+const toRaw = (value: number, decimals: number) => BigInt(Math.floor(value * 1e6)) * 10n ** BigInt(decimals - 6);
+
+export function fakeVenue(chain: FakeChain): LiveVenue {
+  const key = (wallet: string, token: string) => `${wallet.toLowerCase()}:${token.toLowerCase()}`;
+  return {
+    async funds(wallet) {
+      if (chain.unreadable) return null;
+      const usdg = chain.usdg.get(wallet.toLowerCase()) ?? 0;
+      return { usdg, usdgRaw: toRaw(usdg, USDG.decimals), ethWei: chain.ethWei.get(wallet.toLowerCase()) ?? 0n };
+    },
+    async tokenBalance(wallet, token) {
+      return chain.unreadable ? null : (chain.tokens.get(key(wallet, token)) ?? 0n);
+    },
+    async quote(request) {
+      chain.slippageAsked.push(request.slippagePercent);
+      const buy = request.side === "buy";
+      const mid = request.market?.priceUsd ?? NaN;
+      const wallet = request.wallet.toLowerCase();
+      let simulationError: string | null = null;
+      let out = 0n;
+      if (!Number.isFinite(mid) || mid <= 0) simulationError = "No swap route is available for this trade.";
+      else if (buy) {
+        const usd = Number(request.amountInRaw) / 1e6;
+        if ((chain.usdg.get(wallet) ?? 0) + 1e-9 < usd) simulationError = "The swap reverted in simulation: transfer amount exceeds balance";
+        out = toRaw(usd / (mid * (1 + chain.impactPercent / 100)), TOKEN_DECIMALS);
+      } else {
+        if ((chain.tokens.get(key(wallet, request.token)) ?? 0n) < request.amountInRaw) simulationError = "The swap reverted in simulation: transfer amount exceeds balance";
+        out = toRaw((Number(request.amountInRaw) / Number(unit)) * mid * (1 - chain.impactPercent / 100), USDG.decimals);
+      }
+      if (chain.fail === "simulate") simulationError = "The swap reverted in simulation: mock failure";
+      const route =
+        Number.isFinite(mid) && mid > 0
+          ? {
+              tool: "fake",
+              tokenIn: (buy ? USDG.address : request.token.toLowerCase()) as `0x${string}`,
+              tokenOut: (buy ? request.token.toLowerCase() : USDG.address) as `0x${string}`,
+              amountIn: request.amountInRaw,
+              to: SWAP_ROUTER,
+              data: "0x00" as const,
+              gasLimit: 500_000n,
+              toAmount: out,
+              toAmountMin: (out * BigInt(Math.round((100 - request.slippagePercent) * 1000))) / 100_000n,
+              fetchedAt: request.now,
+            }
+          : null;
+      return buildLiveQuote({ request, tokenDecimals: TOKEN_DECIMALS, route, simulatedOutRaw: simulationError ? null : out, simulationError, networkFeeUsd: chain.gasUsd });
+    },
+    async execute({ quote, onSigned }) {
+      const route = quote.route;
+      if (!route || !quote.simulation.ok) return { ok: false, stage: "quote", reason: quote.simulation.detail, gasUsd: 0, uncertain: false };
+      const txHash = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
+      const buy = quote.side === "buy";
+      // The wallet is whoever holds the input: tests use one wallet per agent, so find it by balance key.
+      const wallet = [...(buy ? chain.usdg.keys() : [...chain.tokens.keys()].filter((entry) => entry.endsWith(`:${quote.token}`)).map((entry) => entry.split(":")[0]!))][0] ?? "";
+      const outRaw = BigInt(quote.simulatedOutRaw ?? "0");
+      const fill: Fill = { ok: true, txHash, inRaw: route.amountIn, outRaw, gasUsd: chain.gasUsd };
+      const land = () => {
+        if (buy) {
+          chain.usdg.set(wallet, (chain.usdg.get(wallet) ?? 0) - Number(route.amountIn) / 1e6);
+          chain.tokens.set(key(wallet, quote.token), (chain.tokens.get(key(wallet, quote.token)) ?? 0n) + outRaw);
+        } else {
+          chain.tokens.set(key(wallet, quote.token), (chain.tokens.get(key(wallet, quote.token)) ?? 0n) - route.amountIn);
+          chain.usdg.set(wallet, (chain.usdg.get(wallet) ?? 0) + Number(outRaw) / 1e6);
+        }
+      };
+      if (chain.fail === "revert") {
+        const reverted: Fill = { ok: false, stage: "revert", reason: "The swap transaction reverted on the chain. No tokens moved.", txHash, gasUsd: chain.gasUsd, uncertain: false };
+        chain.signed.push(txHash);
+        await onSigned(txHash, chain.signed.length - 1);
+        chain.sent.set(txHash, reverted);
+        return reverted;
+      }
+      chain.signed.push(txHash);
+      await onSigned(txHash, chain.signed.length - 1);
+      if (chain.fail === "uncertain") {
+        // Signed and broadcast, but this process never hears back. A test decides later whether it landed.
+        return { ok: false, stage: "confirm", reason: "The swap was sent but not confirmed in time.", txHash, gasUsd: 0, uncertain: true };
+      }
+      land();
+      chain.sent.set(txHash, fill);
+      return fill;
+    },
+    async inspect({ txHash }) {
+      return chain.sent.get(txHash) ?? null;
+    },
+    async nonceUsed() {
+      return chain.unreadable ? null : chain.nonceConsumed;
+    },
+  };
+}
+
+/** Marks a swap that was sent without confirmation as having landed, with the amounts its quote simulated. */
+export function landLater(chain: FakeChain, txHash: string, fill: Fill): void {
+  chain.sent.set(txHash, fill);
+}
+
+export function fakeChain(initial: Partial<FakeChain> = {}): FakeChain {
+  return {
+    usdg: new Map(),
+    ethWei: new Map(),
+    tokens: new Map(),
+    impactPercent: 0.2,
+    gasUsd: 0.03,
+    unreadable: false,
+    fail: null,
+    sent: new Map(),
+    nonceConsumed: true,
+    signed: [],
+    slippageAsked: [],
+    ...initial,
+  };
 }
 
 export function fakeDeps(assets: TestAsset[], initial: Partial<FakeState> = {}): { deps: EngineDeps; state: FakeState } {
@@ -172,6 +319,7 @@ export function fakeDeps(assets: TestAsset[], initial: Partial<FakeState> = {}):
     completeError: null,
     calls: [],
     notes: [],
+    venue: fakeChain(),
     ...initial,
   };
   const deps: EngineDeps = {
@@ -207,6 +355,7 @@ export function fakeDeps(assets: TestAsset[], initial: Partial<FakeState> = {}):
     notify: (async (_automation: unknown, text: string) => {
       state.notes.push(text);
     }) as unknown as EngineDeps["notify"],
+    venue: fakeVenue(state.venue),
   };
   return { deps, state };
 }

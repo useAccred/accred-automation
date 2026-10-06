@@ -3,6 +3,7 @@ import Link from "next/link";
 import { PageHeader } from "@/components/status";
 import { TradingForm, type TradingFormValues } from "@/components/trading/trading-form";
 import { requireUser } from "@/lib/auth";
+import { env } from "@/lib/env";
 import { isConnectionKind } from "@/lib/connections/kinds";
 import { formCatalog, listConnections } from "@/lib/queries";
 import { presetMandate } from "@/lib/trading/mandate";
@@ -33,7 +34,7 @@ export default async function NewTradingAgentPage() {
     intervalMinutes: 15,
     strategies: ["momentum"],
     instructions: "",
-    mandate: presetMandate("balanced", 1000),
+    mandate: { ...presetMandate("balanced", 1000), mode: "live" },
     // Shown ticked so the review is of the whole grant; nothing takes effect until the approval box is ticked.
     permissions: PERMISSION_LIST,
     connectionIds: [],
@@ -44,7 +45,7 @@ export default async function NewTradingAgentPage() {
       <PageHeader
         eyebrow="New · Trading agent"
         title="Define exactly how your agent can trade"
-        description="The agent researches the market and proposes trades. Deterministic backend controls approve every one before anything moves. You are giving it a mandate, not your wallet."
+        description="The agent researches the market and proposes trades on Robinhood Chain mainnet. Deterministic backend controls approve every one before anything moves. You are giving it a mandate, not your wallet."
         actions={
           <Link href="/app/trading" className="btn btn-secondary">
             Back
@@ -58,11 +59,13 @@ export default async function NewTradingAgentPage() {
           name: wallet.name,
           address: wallet.address,
           balanceUsd: balances[index]?.totalUsd ?? null,
+          usdg: balances[index]?.usdg ?? null,
           revoked: wallet.tradingRevokedAt !== null,
         }))}
         connections={connections}
         catalog={catalog}
         topAssets={assets}
+        liveEnabled={env.liveTrading}
       />
     </>
   );

@@ -19,11 +19,15 @@ export interface PortfolioPosition {
 
 export interface PortfolioFill {
   side: "buy" | "sell";
-  status: "filled" | "failed";
+  /** Only "filled" fills are counted here. */
+  status: "pending" | "filled" | "failed";
   createdAt: Date;
   swapFeeUsd: number;
   networkFeeUsd: number;
   realizedPnlUsd: number;
+  /** Needed for pending buys, which hold capital before they become positions. */
+  notionalUsd?: number;
+  assetAddress?: string;
 }
 
 export interface PortfolioState {
@@ -85,16 +89,22 @@ export function computePortfolio(input: {
   peakEquityUsd: number | null;
   /** Losses before this moment do not count toward the loss streak (set when the user resumes after a breaker). */
   streakResetAt: Date | null;
+  /** Network fees paid by live trades that failed before a position existed. Real money, so it is part of the result. */
+  orphanFeesUsd?: number;
 }): PortfolioState {
   const { mandate, now } = input;
   const allocationUsd = mandate.agentAllocationUsd;
   const open = input.positions.filter((position) => position.status === "open");
   const closed = input.positions.filter((position) => position.status === "closed");
 
-  const openCostUsd = open.reduce((total, position) => total + position.quantity * position.entryPriceUsd, 0);
-  const openValueUsd = open.reduce((total, position) => total + position.quantity * position.lastPriceUsd, 0);
+  // A live buy that has been reserved or sent but not yet confirmed already holds its capital and its slot.
+  const pendingBuys = input.fills.filter((fill) => fill.status === "pending" && fill.side === "buy");
+  const pendingUsd = pendingBuys.reduce((total, fill) => total + (fill.notionalUsd ?? NaN), 0);
+  const heldCostUsd = open.reduce((total, position) => total + position.quantity * position.entryPriceUsd, 0);
+  const openCostUsd = heldCostUsd + pendingUsd;
+  const openValueUsd = open.reduce((total, position) => total + position.quantity * position.lastPriceUsd, 0) + pendingUsd;
   const realizedGrossUsd = input.positions.reduce((total, position) => total + position.realizedPnlUsd, 0);
-  const feesUsd = input.positions.reduce((total, position) => total + position.feesUsd, 0);
+  const feesUsd = input.positions.reduce((total, position) => total + position.feesUsd, 0) + (input.orphanFeesUsd ?? 0);
   const realizedNetUsd = realizedGrossUsd - feesUsd;
   const unrealizedUsd = openValueUsd - openCostUsd;
   const equityUsd = allocationUsd + realizedNetUsd + unrealizedUsd;
@@ -108,10 +118,11 @@ export function computePortfolio(input: {
 
   const startOfDay = dayStart(now, input.timezone);
   const filled = input.fills.filter((fill) => fill.status === "filled");
-  const today = filled.filter((fill) => fill.createdAt.getTime() >= startOfDay);
-  const realizedToday = today.reduce((total, fill) => total + fill.realizedPnlUsd - fill.swapFeeUsd - fill.networkFeeUsd, 0);
+  // A failed live fill moved no tokens but still paid for its transactions.
+  const settledToday = input.fills.filter((fill) => fill.status !== "pending" && fill.createdAt.getTime() >= startOfDay);
+  const realizedToday = settledToday.reduce((total, fill) => total + (fill.status === "filled" ? fill.realizedPnlUsd - fill.swapFeeUsd : 0) - fill.networkFeeUsd, 0);
   const dayNetUsd = realizedToday + unrealizedUsd;
-  const buys = filled.filter((fill) => fill.side === "buy");
+  const buys = [...filled, ...pendingBuys].filter((fill) => fill.side === "buy");
   const lastTradeAt = buys.reduce<number | null>((latest, fill) => Math.max(latest ?? 0, fill.createdAt.getTime()), null);
 
   // The streak counts closed positions, newest first, until one that did not lose.
@@ -134,8 +145,8 @@ export function computePortfolio(input: {
     availableUsd,
     openCostUsd,
     openValueUsd,
-    openPositions: open.length,
-    openAssets: open.map((position) => position.assetAddress),
+    openPositions: open.length + pendingBuys.length,
+    openAssets: [...open.map((position) => position.assetAddress), ...pendingBuys.flatMap((fill) => (fill.assetAddress ? [fill.assetAddress] : []))],
     realizedNetUsd,
     realizedGrossUsd,
     feesUsd,

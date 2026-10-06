@@ -182,6 +182,11 @@ export async function listDecisions(automationId: string, limit = 20) {
   }));
 }
 
+/** Every fill, newest first: what was bought or sold, at what price, what it cost in fees, and its transaction. */
+export async function listTrades(automationId: string, limit = 20) {
+  return db.select().from(executions).where(eq(executions.automationId, automationId)).orderBy(desc(executions.createdAt)).limit(limit);
+}
+
 export async function listRuns(automationId: string, limit = 12) {
   return db.select().from(tradingRuns).where(eq(tradingRuns.automationId, automationId)).orderBy(desc(tradingRuns.createdAt)).limit(limit);
 }

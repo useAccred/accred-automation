@@ -7,13 +7,16 @@ import { decrypt } from "../crypto";
 import { db, positions, riskEvaluations, tradeProposals, tradingAutomations, tradingRuns, users, type TradeProposal, type TradingRunStatus } from "../db";
 import { audit } from "./audit";
 import { networkFeeUsd } from "./chain";
+import { env } from "../env";
 import { executeEntry, riskInputsSnapshot } from "./execution";
+import { createLiveVenue, quoteRecord, type LiveVenue, type WalletFunds } from "./live-venue";
 import type { MandateAsset } from "./mandate";
 import { MarketDataError, fetchSnapshots, type MarketSnapshot } from "./market-data";
 import { notifyTrading } from "./notify";
 import { PROPOSAL_FORMAT_REMINDER, PROPOSAL_MAX_OUTPUT, buildProposalMessages, parseProposals, type Candidate, type ModelProposal } from "./proposal";
-import { paperQuote } from "./quote";
-import { entryBlocker, evaluateRisk, localClock, marketFilterFailure, rejectionSummary, type RiskInputs } from "./risk-engine";
+import { paperQuote, type PaperQuote } from "./quote";
+import type { LiveQuote } from "./live-venue";
+import { entryBlocker, evaluateRisk, localClock, marketFilterFailure, rejectionSummary, type RiskInputs, type RiskWallet } from "./risk-engine";
 import { loadAgent, loadPortfolio, moveTrade, riskAgent, tradingCreditsThisMonth, type LoadedAgent, type ProposalRef } from "./store";
 import { matchingStrategies } from "./strategy";
 
@@ -36,9 +39,23 @@ export interface EngineDeps {
   catalog(): Promise<Model[]>;
   complete(apiKey: string, params: { model: string; messages: Message[]; maxOutputTokens: number }, idempotencyKey: string): Promise<ChatCompletion>;
   notify: typeof notifyTrading;
+  /** Where Live Mode trades. Paper Mode never touches it. */
+  venue: LiveVenue;
+}
+
+let sharedVenue: LiveVenue | undefined;
+
+/** A live trade needs ETH for an approval and a swap. Below this the wallet is treated as out of gas. */
+export const MIN_GAS_WEI = 100_000_000_000_000n;
+
+export function riskWallet(funds: WalletFunds | null): RiskWallet | null {
+  return funds ? { usdg: funds.usdg, hasGas: funds.ethWei >= MIN_GAS_WEI } : null;
 }
 
 export const defaultDeps: EngineDeps = {
+  get venue() {
+    return (sharedVenue ??= createLiveVenue());
+  },
   now: () => Date.now(),
   snapshots: fetchSnapshots,
   networkFeeUsd,
@@ -103,9 +120,12 @@ async function runCycle(cycle: Cycle): Promise<CycleResult> {
   const { automation, mandate, wallet } = agent;
   const now = deps.now();
 
-  // Only Paper Mode has an execution path. Anything else stops here, before any work is done.
-  if (automation.mode !== "paper" || mandate.mode !== "paper") {
-    return finish(cycle, "skipped", "Live trading is not available on this server. Nothing was traded.");
+  // An agent trades in the mode its mandate was approved for, and live only while the server's switch is on.
+  if (automation.mode !== mandate.mode) return finish(cycle, "skipped", "The agent's mode does not match its mandate. Nothing was traded.");
+  if (automation.mode === "live" && !env.liveTrading) return finish(cycle, "skipped", "Live trading is switched off on this server. Nothing was traded.");
+  // There is no simulated trading in the product. The paper fill model only runs inside the test suite.
+  if (automation.mode === "paper" && (env.liveTrading || !env.paperFixture)) {
+    return finish(cycle, "skipped", "Paper Mode has been retired. Create a new agent to trade. Nothing was traded.");
   }
   if (!automation.permissions.includes("READ_MARKET_DATA")) return finish(cycle, "skipped", "The agent has no permission to read market data.");
 
@@ -302,6 +322,7 @@ async function processProposal(cycle: Cycle, proposed: ModelProposal, scan: Map<
 
   // ── Deterministic risk engine ───────────────────────────────────────────
   const now = deps.now();
+  const live = automation.mode === "live";
   const inputs: RiskInputs = {
     now,
     clock: localClock(now, automation.timezone),
@@ -318,6 +339,8 @@ async function processProposal(cycle: Cycle, proposed: ModelProposal, scan: Map<
     portfolio: await loadPortfolio(db, automation, mandate, now),
     market: scanned,
     quote: null,
+    // Live: what the wallet really holds, read from the chain. Unreadable means no trade.
+    wallet: live ? riskWallet(await deps.venue.funds(wallet.address)) : undefined,
   };
   const pre = evaluateRisk(inputs, "pre_trade");
   await db.insert(riskEvaluations).values({
@@ -342,18 +365,32 @@ async function processProposal(cycle: Cycle, proposed: ModelProposal, scan: Map<
 
   // ── Quote and simulation, on fresh data ─────────────────────────────────
   let market: MarketSnapshot | null = null;
-  let fee: number | null = null;
   try {
     market = (await deps.snapshots([asset.address], { fresh: true })).get(asset.address) ?? null;
   } catch {
     // No fresh price means no quote; the final check fails on it below.
   }
-  try {
-    fee = await deps.networkFeeUsd();
-  } catch {
-    // An unknown fee fails the network-fee check.
+  let quote: PaperQuote | LiveQuote;
+  if (live) {
+    // A real route, simulated on the chain from the wallet. USDG has six decimals; fractions of a micro-dollar are dropped.
+    quote = await deps.venue.quote({
+      side: "buy",
+      wallet: wallet.address,
+      token: asset.address,
+      amountInRaw: BigInt(Math.floor(proposal.requestedUsd * 1_000_000)),
+      slippagePercent: mandate.maxSlippagePercent,
+      market,
+      now: deps.now(),
+    });
+  } else {
+    let fee: number | null = null;
+    try {
+      fee = await deps.networkFeeUsd();
+    } catch {
+      // An unknown fee fails the network-fee check.
+    }
+    quote = paperQuote({ side: "buy", market, notionalUsd: proposal.requestedUsd, networkFeeUsd: fee, now: deps.now() });
   }
-  const quote = paperQuote({ side: "buy", market, notionalUsd: proposal.requestedUsd, networkFeeUsd: fee, now: deps.now() });
   await db
     .update(tradingAutomations)
     .set({ simulationFailures: quote.simulation.ok ? 0 : sql`${tradingAutomations.simulationFailures} + 1` })
@@ -361,27 +398,39 @@ async function processProposal(cycle: Cycle, proposed: ModelProposal, scan: Map<
   await moveTrade(db, ref, "SIMULATED", {
     actor: "execution",
     summary: quote.simulation.ok ? `Quoted and simulated ${symbol}: ${quote.simulation.detail}` : `Simulation failed for ${symbol}: ${quote.simulation.detail}`,
-    data: { quote: { ...quote } },
+    data: { quote: "route" in quote ? quoteRecord(quote) : { ...quote } },
   });
 
   // ── Final pre-trade check and execution ─────────────────────────────────
-  const outcome = await executeEntry({ proposal: { ...proposal, state: ref.state }, market, quote, now: deps.now() });
+  const outcome = await executeEntry({
+    proposal: { ...proposal, state: ref.state },
+    market,
+    quote,
+    now: deps.now(),
+    wallet: live ? riskWallet(await deps.venue.funds(wallet.address)) : undefined,
+    venue: live ? deps.venue : undefined,
+  });
   if (outcome.status === "opened") {
-    const entry = outcome.quote.priceUsd;
+    const entry = outcome.priceUsd;
     await deps.notify(
       automation,
       [
         `BUY — ${symbol}`,
-        `Position ${usd(outcome.quote.notionalUsd)} at $${entry.toPrecision(5)}`,
-        `Stop loss $${(entry * (1 - outcome.result.stopLossPercent! / 100)).toPrecision(5)} · take profit $${(entry * (1 + outcome.result.takeProfitPercent! / 100)).toPrecision(5)}`,
-        `Maximum planned loss ${usd(outcome.result.plannedLossUsd ?? 0)}`,
-        `Risk checks ${outcome.result.passed}/${outcome.result.total} passed`,
+        `Position ${usd(outcome.notionalUsd)} at $${entry.toPrecision(5)}`,
+        `Stop loss $${outcome.stopLossPrice.toPrecision(5)}${outcome.takeProfitPrice ? ` · take profit $${outcome.takeProfitPrice.toPrecision(5)}` : ""}`,
+        `Maximum planned loss ${usd(outcome.notionalUsd * (1 - outcome.stopLossPrice / entry))}`,
+        ...(outcome.result ? [`Risk checks ${outcome.result.passed}/${outcome.result.total} passed`] : []),
+        ...(outcome.txHash ? [`Transaction ${outcome.txHash}`] : []),
       ].join("\n"),
     );
     return true;
   }
   if (outcome.status === "rejected") {
     await deps.notify(automation, `SKIPPED — ${symbol}\n${outcome.reason}\nRisk engine: rejected automatically`);
+  } else if (outcome.status === "failed") {
+    await deps.notify(automation, `FAILED — ${symbol}\n${outcome.reason}\nNo position was opened.`);
+  } else if (outcome.status === "pending") {
+    await deps.notify(automation, `PENDING — ${symbol}\nThe swap was sent and has not confirmed yet. Its capital stays reserved until the chain settles it.`);
   }
   return false;
 }

@@ -11,6 +11,14 @@ const PUBLIC_RPC_URLS = ["https://rpc.mainnet.chain.robinhood.com", "https://rob
 export const USDG = { address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", symbol: "USDG", decimals: 6 } as const;
 export const WETH = { address: "0x0bd7d308f8e1639fab988df18a8011f41eacad73", symbol: "WETH", decimals: 18 } as const;
 
+/**
+ * The only contract a trading wallet may approve or call: LI.FI's router on
+ * Robinhood Chain, as published in LI.FI's chain registry (li.quest/v1/chains,
+ * chain 4663, "diamondAddress"). Pinned here so a route that names any other
+ * address is refused.
+ */
+export const SWAP_ROUTER = "0xb477751b76cf82d00a686a1232f5fcd772414af3" as const;
+
 export const robinhoodChain = defineChain({
   id: CHAIN_ID,
   name: "Robinhood Chain",

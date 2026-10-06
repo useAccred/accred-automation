@@ -49,6 +49,24 @@ export const env = {
     if (secret && secret.length < 32) throw new Error("TRADING_WALLET_SECRET must be at least 32 characters.");
     return secret;
   },
+  /**
+   * Whether this server may trade with real funds. Off unless LIVE_TRADING is
+   * exactly "on". With it off, no code path can sign a trade.
+   */
+  get liveTrading() {
+    return read("LIVE_TRADING") === "on";
+  },
+  /**
+   * Tests only. The retired Paper Mode's fill model is kept as a fixture for the
+   * test suite; nothing in the product can create or run a paper agent without this.
+   */
+  get paperFixture() {
+    return read("TRADING_PAPER_FIXTURE") === "on";
+  },
+  /** Optional LI.FI API key, for a higher request limit on swap routes. */
+  get lifiApiKey() {
+    return read("LIFI_API_KEY");
+  },
   /** An extra Robinhood Chain RPC endpoint, tried before the public ones. HTTPS only. */
   get robinhoodRpcUrl() {
     const url = read("ROBINHOOD_RPC_URL");

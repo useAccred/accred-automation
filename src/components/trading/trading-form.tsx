@@ -1,6 +1,6 @@
 "use client";
 
-import { Lock, Plus, ShieldCheck, X } from "lucide-react";
+import { Plus, ShieldCheck, X } from "lucide-react";
 import Link from "next/link";
 import { useActionState, useState, useTransition } from "react";
 import { lookupAsset, saveTradingAgent } from "@/app/trading-actions";
@@ -10,7 +10,6 @@ import { MODEL_MODES, type ModelMode } from "@/lib/agent/modes";
 import { CONNECTION_KINDS, type ConnectionKind } from "@/lib/connections/kinds";
 import type { FormCatalog } from "@/lib/queries";
 import { compactUsd, fmtUsd, shortAddress } from "@/lib/trading/format";
-import { LIVE_BLOCKERS } from "@/lib/trading/live";
 import { NETWORK, PRESETS, positionCapUsd, presetMandate, profileOf, type Mandate, type MandateAsset, type RiskProfile } from "@/lib/trading/mandate";
 import { INTERVALS, MANDATE_GROUPS, NUMERIC_KEYS } from "@/lib/trading/mandate-fields";
 import { PERMISSIONS, PERMISSION_LIST, REQUIRED_WITH_EXECUTE, type Permission } from "@/lib/trading/permissions";
@@ -38,6 +37,8 @@ export interface WalletOption {
   address: string;
   /** Null when the chain could not be read. */
   balanceUsd: number | null;
+  /** USDG in the wallet: what positions are bought with. Null when the chain could not be read. */
+  usdg: number | null;
   revoked: boolean;
 }
 
@@ -62,6 +63,7 @@ export function TradingForm({
   catalog,
   topAssets,
   openPositions = 0,
+  liveEnabled,
 }: {
   initial: TradingFormValues;
   wallets: WalletOption[];
@@ -69,6 +71,8 @@ export function TradingForm({
   catalog: FormCatalog;
   topAssets: AssetOption[];
   openPositions?: number;
+  /** Whether this server may trade with real funds. */
+  liveEnabled: boolean;
 }) {
   const editing = Boolean(initial.id);
   const [state, action] = useActionState(saveTradingAgent, undefined);
@@ -98,7 +102,7 @@ export function TradingForm({
   // The mandate exactly as it will be saved. An empty field becomes null and the server refuses it.
   const mandate = {
     ...Object.fromEntries(NUMERIC_KEYS.map((key) => [key, numbers[key].trim() === "" ? NaN : Number(numbers[key])])),
-    mode: "paper",
+    mode: "live",
     tradingEnabled: true,
     allowedNetwork: NETWORK,
     stopLossRequired,
@@ -247,7 +251,7 @@ export function TradingForm({
           </div>
         )}
         <p className="hint">
-          Deposits and withdrawals are on the Wallets page. Paper Mode needs no funds: nothing is signed and nothing leaves the wallet.
+          Deposits and withdrawals are on the Wallets page. The wallet needs USDG to buy positions with and a little ETH for network fees before the agent can trade.
         </p>
       </section>
 
@@ -276,7 +280,14 @@ export function TradingForm({
                 <dd className="font-mono">{wallet && wallet.balanceUsd !== null && Number.isFinite(allocation) ? fmtUsd(Math.max(0, wallet.balanceUsd - allocation)) : "—"}</dd>
               </div>
             </dl>
-            <p className="mt-2 text-xs text-muted">In Paper Mode the allocation is simulated capital, so it can be larger than the wallet balance.</p>
+            <div className="mt-1.5 flex justify-between gap-3 border-t border-line pt-1.5">
+              <span className="text-muted">USDG in the wallet</span>
+              <span className="font-mono">{wallet ? (wallet.usdg === null ? "unavailable" : fmtUsd(wallet.usdg)) : "—"}</span>
+            </div>
+            <p className="mt-2 text-xs text-muted">Positions are bought with the wallet&apos;s USDG. A trade larger than the USDG the wallet really holds is refused.</p>
+            {wallet && wallet.usdg !== null && Number.isFinite(allocation) && allocation > wallet.usdg && (
+              <p className="mt-2 text-xs text-warning">The wallet holds less USDG than this allocation. Deposit more, or the agent can only use what is there.</p>
+            )}
           </div>
         </div>
       </section>
@@ -476,31 +487,16 @@ export function TradingForm({
 
       <section className="card space-y-4 p-5 sm:p-6">
         <p className="eyebrow">07 · Mode</p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <div className={tile(true)}>
-            <span className="flex items-center gap-2 text-[13px] font-medium">
-              <ShieldCheck size={14} className="text-success" /> Paper Mode
-            </span>
-            <span className="mt-1 block text-xs text-muted">
-              Real market data, the same strategy and the same risk engine as Live. Fills are simulated with fees and slippage. Nothing is signed and no funds move.
-            </span>
-          </div>
-          <div className="rounded-lg border border-line p-3 opacity-70">
-            <span className="flex items-center gap-2 text-[13px] font-medium">
-              <Lock size={14} /> Live Mode
-              <span className="eyebrow">Locked</span>
-            </span>
-            <span className="mt-1 block text-xs text-muted">Not available yet. An agent runs in Paper Mode first, you review its results, and going live will be a separate, explicit step.</span>
-            <details className="mt-2 text-xs text-muted">
-              <summary className="cursor-pointer text-primary-soft">What has to happen first</summary>
-              <ul className="mt-2 list-disc space-y-1 pl-4">
-                {LIVE_BLOCKERS.map((blocker) => (
-                  <li key={blocker}>{blocker}</li>
-                ))}
-              </ul>
-            </details>
-          </div>
+        <div className={tile(true)}>
+          <span className="flex items-center gap-2 text-[13px] font-medium">
+            <ShieldCheck size={14} className="text-success" /> Live on Robinhood Chain mainnet
+            <span className="eyebrow">Chain ID 4663 · real funds</span>
+          </span>
+          <span className="mt-1 block text-xs text-muted">
+            Every trade is a real swap from this agent&apos;s wallet. Each one is simulated on the chain from the wallet first and only signed if that passes. Profit and loss come from what the transactions actually moved.
+          </span>
         </div>
+        {!liveEnabled && <Notice tone="warning">Live trading is switched off on this server, so an agent cannot be started yet.</Notice>}
       </section>
 
       <section className="card space-y-5 p-5 sm:p-6">
@@ -576,7 +572,7 @@ export function TradingForm({
           <p className="mb-2 text-xs text-muted">With this mandate the agent:</p>
           <ul className="space-y-1.5 text-[13px]">
             {[
-              `Runs in Paper Mode: nothing is signed and no funds move.`,
+              `Trades with real funds on Robinhood Chain mainnet. Every swap is simulated on the chain before it is signed.`,
               `Deploys at most ${fmtUsd(allocation)}${Number.isFinite(mandate.reserveUsd) && mandate.reserveUsd > 0 ? `, keeping ${fmtUsd(mandate.reserveUsd)} of that in reserve` : ""}. Everything else in the wallet is outside its reach.`,
               `Opens at most ${numbers.maxOpenPositions} positions at once, none larger than ${fmtUsd(cap)}, with at most ${numbers.maxTotalExposurePercent}% of the allocation exposed.`,
               `Risks at most ${fmtUsd((allocation * mandate.maxLossPerTradePercent) / 100)} per trade, and stops for the day after losing ${fmtUsd((allocation * mandate.dailyLossLimitPercent) / 100)}.`,
@@ -616,16 +612,23 @@ export function TradingForm({
           <span>
             <span className="block text-[13px] font-medium">I have reviewed these permissions and limits and approve them</span>
             <span className="mt-1 block text-xs text-muted">
-              {editing ? "Saving creates a new version of the mandate. Every trade records the version that approved it." : "The agent starts in Paper Mode as soon as you approve. You can pause it at any time."}
+              {editing ? "Saving creates a new version of the mandate. Every trade records the version that approved it." : "The agent starts trading as soon as you approve. You can pause it at any time."}
             </span>
+          </span>
+        </label>
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-danger/30 p-3">
+          <input type="checkbox" name="confirmLive" className="mt-0.5 size-4 accent-[hsl(224_83%_51%)]" required />
+          <span>
+            <span className="block text-[13px] font-medium">I understand this agent trades real funds from its wallet</span>
+            <span className="mt-1 block text-xs text-muted">Losses are real and trades on the chain cannot be undone. The limits above cap what it can lose, they do not prevent loss.</span>
           </span>
         </label>
       </section>
 
       {state?.error && <Notice tone={state.riskIncreases ? "warning" : "danger"}>{state.error}</Notice>}
       <div className="flex flex-wrap items-center gap-3">
-        <SubmitButton className="btn btn-primary btn-lg" pendingText="Saving…" disabled={wallets.length === 0}>
-          {editing ? "Approve and save changes" : "Approve and start in Paper Mode"}
+        <SubmitButton className="btn btn-primary btn-lg" pendingText="Saving…" disabled={wallets.length === 0 || !liveEnabled}>
+          {editing ? "Approve and save changes" : "Approve and start trading"}
         </SubmitButton>
         <Link href={initial.id ? `/app/trading/${initial.id}` : "/app/trading"} className="btn btn-secondary btn-lg">
           Cancel

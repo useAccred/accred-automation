@@ -13,7 +13,7 @@ import { connections, db, positions, riskMandates, tradingAutomations, tradingSt
 import { isValidTimezone } from "@/lib/schedule";
 import { audit } from "@/lib/trading/audit";
 import { runTradingCycle } from "@/lib/trading/engine";
-import { LIVE_TRADING_AVAILABLE } from "@/lib/trading/live";
+import { env } from "@/lib/env";
 import { MandateSchema, canonicalMandate, profileOf, riskIncreases, type Mandate } from "@/lib/trading/mandate";
 import { INTERVALS, NUMERIC_KEYS, mandateLabel } from "@/lib/trading/mandate-fields";
 import { cleanSymbol, fetchSnapshots } from "@/lib/trading/market-data";
@@ -193,9 +193,9 @@ export async function saveTradingAgent(_previous: TradingFormState, form: FormDa
   const mandateResult = parseMandate(text(form, "mandate"));
   if ("error" in mandateResult) return mandateResult;
   const mandate = mandateResult.mandate;
-  if (mandate.mode !== "paper" || LIVE_TRADING_AVAILABLE) {
-    return { error: "Live Mode is not available yet. Run the agent in Paper Mode: it uses the same strategy and the same risk engine, with nothing signed." };
-  }
+  // Agents trade with real funds on Robinhood Chain. There is no other mode to create.
+  if (mandate.mode !== "live") return { error: "Agents trade with real funds on Robinhood Chain. Reload the page and try again." };
+  if (!env.liveTrading) return { error: "Live trading is switched off on this server, so an agent cannot be started or changed yet." };
   if (mandate.allowedAssets.length === 0) return { error: "Select at least one asset the agent may trade." };
 
   const kinds = [...new Set(form.getAll("strategies").map(String))].filter(isStrategyKind);
@@ -235,10 +235,13 @@ export async function saveTradingAgent(_previous: TradingFormState, form: FormDa
 
   // Step 11 of the flow: nothing starts, and nothing changes, without this.
   if (form.get("approve") !== "on") return { error: "Review the permissions and limits, then tick the box to approve them." };
+  if (form.get("confirmLive") !== "on") return { error: "Confirm that this agent trades real funds from its wallet." };
 
   const id = text(form, "id");
   const existing = id ? await ownAgent(user.id, id) : null;
   if (id && !existing) return { error: "This agent no longer exists." };
+  // A paper agent's history is simulated. It is never turned into a live one, so real and simulated results cannot mix.
+  if (existing && existing.automation.mode !== "live") return { error: "This agent was created in Paper Mode, which has been retired. Create a new agent to trade." };
   const base = {
     name: input.name,
     walletId: wallet.id,
@@ -257,7 +260,7 @@ export async function saveTradingAgent(_previous: TradingFormState, form: FormDa
     const targetId = await db.transaction(async (tx) => {
       const [created] = await tx
         .insert(tradingAutomations)
-        .values({ ...base, userId: user.id, mode: "paper", status: "running", approvedAt: new Date(), nextRunAt: new Date(), peakEquityUsd: mandate.agentAllocationUsd })
+        .values({ ...base, userId: user.id, mode: "live", status: "running", approvedAt: new Date(), nextRunAt: new Date(), peakEquityUsd: mandate.agentAllocationUsd })
         .returning({ id: tradingAutomations.id });
       await tx.insert(riskMandates).values({ automationId: created!.id, version: 1, profile: profileOf(mandate), mandate });
       await tx.insert(tradingStrategies).values({ automationId: created!.id, version: 1, kinds, instructions: input.instructions });
@@ -268,7 +271,7 @@ export async function saveTradingAgent(_previous: TradingFormState, form: FormDa
           walletId: wallet.id,
           type: "agent.approved",
           actor: "user",
-          summary: `Approved and started in Paper Mode with a $${mandate.agentAllocationUsd.toLocaleString("en-US")} allocation`,
+          summary: `Approved and started with real funds on Robinhood Chain, with a $${mandate.agentAllocationUsd.toLocaleString("en-US")} allocation`,
           data: { mandateVersion: 1, strategyVersion: 1, mandate, strategies: kinds, permissions, wallet: wallet.address },
         },
         tx,
@@ -399,11 +402,12 @@ export async function resumeTradingAgent(form: FormData): Promise<void> {
 
 async function closeMany(ids: string[], reason: "manual_close" | "close_all") {
   let closed = 0;
+  // Not closed: no current price, or the sale did not go through. Either way the position stays open under its stop.
   let noPrice = 0;
   for (const id of ids) {
     const outcome = await closePosition(id, reason).catch(() => ({ status: "no_price" as const }));
     if (outcome.status === "filled") closed++;
-    else if (outcome.status === "no_price") noPrice++;
+    else if (outcome.status === "no_price" || outcome.status === "failed") noPrice++;
   }
   return { closed, noPrice };
 }
@@ -431,7 +435,7 @@ export async function closeAllPositions(form: FormData): Promise<void> {
     automationId: automation.id,
     type: "agent.close_all",
     actor: "user",
-    summary: `Close all positions: ${result.closed} closed${result.noPrice ? `, ${result.noPrice} could not be priced and stay open under their stops` : ""}. Agent paused.`,
+    summary: `Close all positions: ${result.closed} closed${result.noPrice ? `, ${result.noPrice} could not be sold and stay open under their stops` : ""}. Agent paused.`,
     data: result,
   });
   after(() => notifyTrading(automation, `CLOSE ALL by you\n${result.closed} position${result.closed === 1 ? "" : "s"} closed. The agent is paused.`));

@@ -28,7 +28,7 @@ Read-only: the connection asks Google for the `gmail.readonly` scope and gives a
 
 Under **Trading**, a user gives an agent a mandate on Robinhood Chain instead of access to a wallet: a dedicated wallet, a capped allocation, a risk mandate and a list of assets. The model proposes trades; a deterministic risk engine with seventeen checks approves or rejects each one, and a model-free monitor enforces stops, targets and circuit breakers.
 
-Agents run in **Paper Mode**: live market data and the real risk engine, with fills modelled and nothing signed. **Live Mode is locked in code** until swap execution, onchain simulation and a signing design have been built and reviewed. [docs/TRADING_AGENT.md](docs/TRADING_AGENT.md) has the architecture, the security checklist and the list of what blocks Live Mode.
+Agents trade **with real funds on Robinhood Chain mainnet** (chain ID 4663), buying and selling against USDG. Every swap is validated, simulated on the chain from the wallet, and only then signed; profit and loss are computed from transaction receipts. Trading is off unless `LIVE_TRADING=on` is set. [docs/TRADING_AGENT.md](docs/TRADING_AGENT.md) has the architecture, the security checklist and what must still be verified with real funds.
 
 ### The agent loop
 
@@ -93,7 +93,7 @@ The scheduler runs inside the server process and runs continue after the request
 src/app/                 pages, server actions, webhook and cron routes
 src/components/          shared UI
 src/lib/agent/           protocol, model routing, tools, runner, outbound fetch
-src/lib/trading/         trading agents: mandate, risk engine, paper execution, position monitor, wallets
+src/lib/trading/         trading agents: mandate, risk engine, live execution, position monitor, wallets
 src/lib/db/              Drizzle schema and client
 src/lib/connections/     connection types and their fields
 src/lib/templates.ts     starter automations

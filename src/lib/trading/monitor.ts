@@ -1,8 +1,8 @@
 import { and, desc, eq, gte, inArray, lt, lte, or } from "drizzle-orm";
-import { db, executions, positions, riskMandates, tradeProposals, tradingAutomations, tradingRuns, type ExitReason, type Position, type TradingAutomation } from "../db";
+import { db, executions, positions, riskMandates, tradeProposals, tradingAutomations, tradingRuns, tradingWallets, type ExitReason, type Position, type TradingAutomation } from "../db";
 import { audit } from "./audit";
 import { defaultDeps, runTradingCycle, type EngineDeps } from "./engine";
-import { executeExit, type ExitOutcome } from "./execution";
+import { executeExit, settlePending, type ExitOutcome } from "./execution";
 import { decideExit } from "./exits";
 import type { Mandate } from "./mandate";
 import type { MarketSnapshot } from "./market-data";
@@ -53,7 +53,24 @@ export async function recoverInterrupted(now: number): Promise<void> {
     .from(tradeProposals)
     .where(and(inArray(tradeProposals.state, IN_FLIGHT), lt(tradeProposals.updatedAt, new Date(now - IN_FLIGHT_TIMEOUT_MS))))
     .limit(50);
+  // A live entry that is reserved or already sent is not abandoned here: the chain decides it, in settlePending.
+  const pending = stuck.length
+    ? await db
+        .select({ proposalId: executions.proposalId })
+        .from(executions)
+        .where(
+          and(
+            eq(executions.status, "pending"),
+            inArray(
+              executions.proposalId,
+              stuck.map((proposal) => proposal.id),
+            ),
+          ),
+        )
+    : [];
+  const awaitingChain = new Set(pending.map((row) => row.proposalId));
   for (const proposal of stuck) {
+    if (awaitingChain.has(proposal.id)) continue;
     const ref = { id: proposal.id, automationId: proposal.automationId, userId: proposal.userId, runId: proposal.runId, state: proposal.state };
     const reason = "Interrupted before execution. Nothing was traded.";
     await moveTrade(db, ref, proposal.state === "EXECUTING" ? "FAILED" : "CANCELLED", { actor: "system", summary: `${proposal.assetSymbol}: ${reason}`, outcome: reason }).catch(() => {});
@@ -118,13 +135,88 @@ async function watchPosition(position: Position, rules: Mandate, market: MarketS
     });
   }
   if (!decision.exit) return;
-  const outcome = await executeExit({ positionId: position.id, reason: decision.exit.reason, fraction: decision.exit.fraction, market, networkFeeUsd: await feeOrNull(deps), now });
-  if (outcome.status === "filled" && automation) await deps.notify(automation, exitMessage(decision.exit.reason, outcome));
+  const outcome = await executeExit({
+    positionId: position.id,
+    reason: decision.exit.reason,
+    fraction: decision.exit.fraction,
+    market,
+    networkFeeUsd: position.mode === "paper" ? await feeOrNull(deps) : null,
+    now,
+    venue: deps.venue,
+  });
+  if (!automation) return;
+  if (outcome.status === "filled") await deps.notify(automation, exitMessage(decision.exit.reason, outcome));
+  else if (outcome.status === "failed") {
+    await deps.notify(automation, `SALE FAILED — ${position.symbol}\n${EXIT_HEADLINE[decision.exit.reason]} was triggered but the sale did not go through: ${outcome.reason}\nThe position is still open. The sale is retried on the next check with a wider slippage limit.`);
+  }
+}
+
+const lastReconciled = new Map<string, number>();
+const RECONCILE_EVERY_MS = 60_000;
+
+/**
+ * Live Mode: compares what the open positions say is held with what the wallet
+ * really holds on the chain. If the wallet holds less, something outside this
+ * app moved the tokens or the books are wrong, and trading pauses.
+ */
+async function reconcile(open: Position[], agents: Map<string, TradingAutomation>, now: number, deps: EngineDeps): Promise<number> {
+  const live = open.filter((position) => position.mode === "live" && position.quantityRaw);
+  if (live.length === 0) return 0;
+  const due = [...new Set(live.map((position) => position.automationId))].filter((id) => now - (lastReconciled.get(id) ?? 0) >= RECONCILE_EVERY_MS);
+  if (due.length === 0) return 0;
+  const wallets = new Map(
+    (
+      await db
+        .select({ automationId: tradingAutomations.id, address: tradingWallets.address })
+        .from(tradingAutomations)
+        .innerJoin(tradingWallets, eq(tradingWallets.id, tradingAutomations.walletId))
+        .where(inArray(tradingAutomations.id, [...new Set(live.map((position) => position.automationId))]))
+    ).map((row) => [row.automationId, row.address]),
+  );
+  // A sale that is on its way has already moved tokens the books still count.
+  const selling = new Set(
+    (
+      await db
+        .select({ positionId: executions.positionId })
+        .from(executions)
+        .where(and(eq(executions.status, "pending"), eq(executions.side, "sell")))
+    ).map((row) => row.positionId),
+  );
+  let paused = 0;
+  for (const automationId of due) {
+    lastReconciled.set(automationId, now);
+    const wallet = wallets.get(automationId);
+    const agent = agents.get(automationId);
+    if (!wallet || !agent) continue;
+    for (const token of new Set(live.filter((position) => position.automationId === automationId).map((position) => position.assetAddress))) {
+      // Every open live position in this token on this wallet, whichever agent opened it.
+      const holders = live.filter((position) => position.assetAddress === token && wallets.get(position.automationId) === wallet);
+      if (holders.some((position) => selling.has(position.id))) continue;
+      const expected = holders.reduce((total, position) => total + BigInt(position.quantityRaw!), 0n);
+      const actual = await deps.venue.tokenBalance(wallet, token);
+      // An unreadable balance is not a mismatch; stale prices and failing providers have their own breakers.
+      if (actual === null || actual >= expected) continue;
+      const symbol = holders[0]!.symbol;
+      const reason = `The wallet holds less ${symbol} than the open position records. Trading is paused until this is checked.`;
+      await audit({
+        userId: agent.userId,
+        automationId,
+        type: "wallet.mismatch",
+        actor: "monitor",
+        summary: reason,
+        data: { token, expectedRaw: expected.toString(), onchainRaw: actual.toString(), wallet },
+      });
+      if (agent.status === "running" && (await tripBreaker(agent, reason, deps))) paused++;
+    }
+  }
+  return paused;
 }
 
 /** One pass over every open position and every running agent. Safe to run from several processes at once. */
 export async function monitorTick(deps: EngineDeps = defaultDeps): Promise<{ positions: number; paused: number }> {
   const now = deps.now();
+  // Live fills left pending by a crash or a slow confirmation are settled from the chain before anything else is decided.
+  await settlePending(now, deps.venue).catch((error) => console.error("[trading monitor] settlement", error instanceof Error ? error.message : error));
   await recoverInterrupted(now).catch((error) => console.error("[trading monitor] recovery", error instanceof Error ? error.message : error));
 
   const open = await db.select().from(positions).where(eq(positions.status, "open"));
@@ -156,7 +248,10 @@ export async function monitorTick(deps: EngineDeps = defaultDeps): Promise<{ pos
   }
 
   // ── Equity, drawdown and circuit breakers ─────────────────────────────────
-  let paused = 0;
+  let paused = await reconcile(open, agentById, now, deps).catch((error) => {
+    console.error("[trading monitor] reconciliation", error instanceof Error ? error.message : error);
+    return 0;
+  });
   for (const agent of agents) {
     try {
       const loaded = await loadAgent(agent.id);
@@ -205,7 +300,7 @@ export async function closePosition(positionId: string, reason: "manual_close" |
   }
   // A manual close on an unknown price would record a made-up result, so it waits for a real one.
   if (!market) return { status: "no_price" };
-  return executeExit({ positionId, reason, fraction: 1, market, networkFeeUsd: await feeOrNull(deps), now: deps.now() });
+  return executeExit({ positionId, reason, fraction: 1, market, networkFeeUsd: position.mode === "paper" ? await feeOrNull(deps) : null, now: deps.now(), venue: deps.venue });
 }
 
 /** Starts a cycle for every running agent whose interval has passed. An agent is claimed by moving its next run time. */
