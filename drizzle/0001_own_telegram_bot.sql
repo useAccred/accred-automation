@@ -1,0 +1,1 @@
+ALTER TABLE "telegram_links" ADD COLUMN "bot_token_enc" text;

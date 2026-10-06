@@ -66,7 +66,8 @@ export default async function ConnectionsPage({ searchParams }: { searchParams: 
                   )}
                   {connection.kind === "telegram" && connection.display.chatId && (
                     <p className="mt-1 text-xs text-faint">
-                      Telegram gave us this chat ID when you pressed Start in the bot. Messages from your automations go to this chat.
+                      Telegram gave us this chat ID when you pressed Start in the bot. Messages from your automations go to this chat
+                      {connection.display.owner ? ", sent by your own bot." : "."}
                     </p>
                   )}
                 </div>
@@ -87,8 +88,12 @@ export default async function ConnectionsPage({ searchParams }: { searchParams: 
         <h2 className="mb-3 text-sm font-medium">Add a connection</h2>
         <div className="grid gap-3 md:grid-cols-2">
           {CONNECTION_KIND_LIST.map((info) =>
-            info.kind === "telegram" && sharedBotConfigured() ? (
-              <TelegramConnect key={info.kind} linked={list.filter((connection) => connection.kind === "telegram").length} />
+            info.kind === "telegram" ? (
+              <TelegramConnect
+                key={info.kind}
+                shared={sharedBotConfigured()}
+                linked={list.filter((connection) => connection.kind === "telegram").length}
+              />
             ) : info.oauth ? (
               <div key={info.kind} className="card p-4">
                 <div className="flex items-start justify-between gap-3">

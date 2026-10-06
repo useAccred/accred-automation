@@ -15,7 +15,10 @@ The dashboard shows the balance behind the signed-in key. It asks the Accred API
 
 ### Telegram
 
-With `TELEGRAM_BOT_TOKEN` set, users link a chat in one click: the Connections page gives them a one-time `t.me/<bot>?start=<code>` link, they press Start, and the bot ties that chat to their account. The server receives bot messages by long polling (`src/lib/telegram.ts`), so no public webhook is needed and it works on localhost. Only one running process may poll a given bot. Without the token, users paste their own bot token and chat ID instead.
+Users link a chat by pressing Start in a bot, so nobody looks up a chat ID. Two bots work this way:
+
+- **The shared bot.** With `TELEGRAM_BOT_TOKEN` set, the Connections page gives a one-time `t.me/<bot>?start=<code>` link. The server hears the Start message by long polling (`src/lib/telegram.ts`), so no public webhook is needed and it works on localhost. Only one running process may poll a given bot.
+- **A user's own bot.** The user pastes the token from @BotFather. It is checked, stored encrypted in the database with their connection, and used only to send that user's messages. Nothing listens to their bot permanently: while they are on the page the server looks in the bot's updates for their Start message. A bot that already has a webhook or another listener cannot be linked.
 
 ### Gmail
 

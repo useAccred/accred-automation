@@ -46,6 +46,8 @@ export const connections = pgTable(
 export const telegramLinks = pgTable("telegram_links", {
   code: text("code").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  /** Set when the code is for the user's own bot: that bot's token, encrypted. Null for the shared bot. */
+  botTokenEnc: text("bot_token_enc"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: createdAt(),
 });

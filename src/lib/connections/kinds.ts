@@ -25,7 +25,7 @@ export const CONNECTION_KINDS: Record<ConnectionKind, ConnectionKindInfo> = {
   telegram: {
     kind: "telegram",
     label: "Telegram",
-    blurb: "Send messages to a chat from your own bot.",
+    blurb: "Get messages in any chat, from the Accred bot or your own bot.",
     abilities: ["Send a message"],
     fields: [
       {
@@ -150,6 +150,7 @@ export const COMING_SOON = ["Google Calendar", "Notion"];
 const DETAIL_LABELS: Record<string, string> = {
   chat: "Chat",
   chatId: "Chat ID",
+  bot: "Bot",
   email: "Account",
   repo: "Repository",
   baseUrl: "Base URL",

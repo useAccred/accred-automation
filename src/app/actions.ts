@@ -17,7 +17,14 @@ import { MICRO, toMicro } from "@/lib/credits";
 import { decrypt, encrypt, randomToken, sha256 } from "@/lib/crypto";
 import { automations, connections, db, runs, users } from "@/lib/db";
 import { isValidTimezone, nextRun, validateCron } from "@/lib/schedule";
-import { createTelegramLink, sharedBotConfigured } from "@/lib/telegram";
+import {
+  OwnBotError,
+  checkOwnBotLink,
+  createOwnBotLink,
+  createTelegramLink,
+  sharedBotConfigured,
+  type OwnBotLinkStatus,
+} from "@/lib/telegram";
 
 export type FormState = { error?: string; values?: Record<string, string> } | undefined;
 
@@ -120,6 +127,26 @@ export async function startTelegramLink(): Promise<FormState> {
   } catch {
     return { error: "Telegram could not be reached. Try again in a moment." };
   }
+}
+
+export async function startOwnTelegramLink(_previous: FormState, form: FormData): Promise<FormState> {
+  const user = await requireUser();
+  if (rateLimited(`telegram-link:${user.id}`, 10, 60_000)) return { error: "Too many attempts. Wait a minute and try again." };
+  try {
+    const link = await createOwnBotLink(user.id, text(form, "botToken"));
+    return { values: link };
+  } catch (error) {
+    return { error: error instanceof OwnBotError ? error.message : "Telegram could not be reached. Try again in a moment." };
+  }
+}
+
+/** Polled by the Connections page while a user is linking their own bot. */
+export async function checkOwnTelegramLink(code: string): Promise<OwnBotLinkStatus> {
+  const user = await requireUser();
+  if (typeof code !== "string" || code.length > 64) return "expired";
+  const status = await checkOwnBotLink(user.id, code);
+  if (status === "linked") revalidatePath("/app/connections");
+  return status;
 }
 
 export async function removeConnection(form: FormData): Promise<void> {
