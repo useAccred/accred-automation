@@ -189,8 +189,11 @@ export async function withdraw(input: WithdrawInput, clients: { public: PublicCl
       const balance = await clients.public.readContract({ address: USDG.address, abi: erc20Abi, functionName: "balanceOf", args: [account.address] });
       const value = max ? balance : parseUnits(input.amount.trim(), USDG.decimals);
       if (value <= 0n || value > balance) throw new WalletError("The wallet does not hold that much USDG.");
-      const { request } = await clients.public.simulateContract({ account, address: USDG.address, abi: erc20Abi, functionName: "transfer", args: [recipient, value], gasPrice });
-      hash = await signer.writeContract(request);
+      const call = { account, address: USDG.address, abi: erc20Abi, functionName: "transfer", args: [recipient, value] } as const;
+      // Simulated with no gas price attached, for the same reason as an approval: see tradeSigner.
+      await clients.public.simulateContract(call);
+      const gas = ((await clients.public.estimateContractGas(call)) * 13n) / 10n;
+      hash = await signer.writeContract({ address: USDG.address, abi: erc20Abi, functionName: "transfer", args: [recipient, value], gas, gasPrice });
       sent = formatUnits(value, USDG.decimals);
     }
   } catch (error) {
@@ -253,9 +256,12 @@ export async function tradeSigner(walletId: string, clients: { public: PublicCli
       if (amount <= 0n) throw new WalletError("Nothing to approve.");
       await stillAllowed();
       try {
-        const gasPrice = (await clients.public.getGasPrice()) * 2n;
-        const { request } = await clients.public.simulateContract({ account, address: token, abi: erc20Abi, functionName: "approve", args: [SWAP_ROUTER, amount], gasPrice });
-        return await signer.writeContract(request);
+        const call = { account, address: token, abi: erc20Abi, functionName: "approve", args: [SWAP_ROUTER, amount] } as const;
+        // Simulated with no gas price attached. Given one, the node assumes the largest gas limit it allows
+        // and refuses unless the balance covers that, which is hundreds of times what an approval costs.
+        await clients.public.simulateContract(call);
+        const [gas, gasPrice] = await Promise.all([clients.public.estimateContractGas(call), clients.public.getGasPrice()]);
+        return await signer.writeContract({ address: token, abi: erc20Abi, functionName: "approve", args: [SWAP_ROUTER, amount], gas: (gas * 13n) / 10n, gasPrice: gasPrice * 2n });
       } catch (error) {
         // The underlying error can quote request details, so only its short form is kept.
         const short = (error as { shortMessage?: string }).shortMessage;

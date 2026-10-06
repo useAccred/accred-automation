@@ -171,6 +171,15 @@ describe.skipIf(!url)("wallet service (database)", () => {
     const same = (a: unknown, b: string) => typeof a === "string" && a.toLowerCase() === b.toLowerCase();
     const uint = (value: bigint) => encodeAbiParameters([{ type: "uint256" }], [value]);
 
+    // As the real chain does: a simulation that names a gas price is assumed to use the node's whole gas
+    // allowance (50 million), and is refused unless the sender's balance covers that.
+    const priced = (tx: { gasPrice?: Hex; maxFeePerGas?: Hex }) => {
+      const price = tx.gasPrice ?? tx.maxFeePerGas;
+      if (price && state.eth < 50_000_000n * BigInt(price)) {
+        throw Object.assign(new Error("err: insufficient funds for gas * price + value (supplied gas 50000000)"), { code: -32000 });
+      }
+    };
+
     const request = async ({ method, params }: { method: string; params?: unknown }): Promise<unknown> => {
       methods.push(method);
       const args = (Array.isArray(params) ? params : []) as unknown[];
@@ -213,7 +222,8 @@ describe.skipIf(!url)("wallet service (database)", () => {
           return tx.data && tx.data !== "0x" ? toHex(65_000n) : toHex(21_000n);
         }
         case "eth_call": {
-          const tx = (args[0] ?? {}) as { to?: string; data?: Hex; from?: string };
+          const tx = (args[0] ?? {}) as { to?: string; data?: Hex; from?: string; gasPrice?: Hex; maxFeePerGas?: Hex };
+          priced(tx);
           if (same(tx.to, chain.USDG.address) && tx.data) {
             const call = decodeFunctionData({ abi: erc20Abi, data: tx.data });
             if (call.functionName === "balanceOf") return uint(same(call.args[0], holder) ? state.usdg : 0n);
@@ -740,7 +750,11 @@ describe.skipIf(!url)("wallet service (database)", () => {
       const simulated: { token: string; from: string; spender: string; amount: bigint }[] = [];
       const request = async ({ method, params }: { method: string; params?: unknown }): Promise<unknown> => {
         methods.push(method);
-        const tx = ((Array.isArray(params) ? params[0] : undefined) ?? {}) as { to?: string; from?: string; data?: Hex };
+        const tx = ((Array.isArray(params) ? params[0] : undefined) ?? {}) as { to?: string; from?: string; data?: Hex; gasPrice?: Hex; maxFeePerGas?: Hex };
+        const price = tx.gasPrice ?? tx.maxFeePerGas;
+        if (method === "eth_call" && price && (options.eth ?? 0n) < 50_000_000n * BigInt(price)) {
+          throw Object.assign(new Error("err: insufficient funds for gas * price + value (supplied gas 50000000)"), { code: -32000 });
+        }
         if (method === "eth_call" && tx.data?.startsWith("0x095ea7b3")) {
           const call = decodeFunctionData({ abi: erc20Abi, data: tx.data });
           if (call.functionName === "approve") {
@@ -964,6 +978,33 @@ describe.skipIf(!url)("wallet service (database)", () => {
       expect(tx.data).toBe("0xdeadbeef");
       expect(signed.raw.toLowerCase()).not.toContain(attacker.slice(2).toLowerCase());
       expect(fake.sent).toHaveLength(0);
+    });
+
+    // Found by the first real trade: the wallet held 0.001 ETH, an approval costs about 0.000002 ETH, and the
+    // approval was refused because its simulation named a gas price, which makes the chain demand a balance
+    // for 50 million gas. The gas price now only goes on the transaction itself.
+    it("approves from a wallet that holds only a little ETH", async () => {
+      const { wallet, address } = await fundedWallet();
+      const realistic = 20_000_000n; // 0.02 gwei, as on Robinhood Chain
+      const fake = approvingChain(address, { eth: parseEther("0.001"), gasPrice: realistic });
+      liveTrading("on");
+      const signer = await wallets.tradeSigner(wallet.id, fake.clients);
+      await signer.approveExact(chain.USDG.address, 3_000_000n);
+      expect(fake.sent).toHaveLength(1);
+      const tx = parseTransaction(fake.sent[0]!);
+      expect(tx.gasPrice).toBe(2n * realistic);
+      // The transaction's own gas limit is the estimate with headroom, nowhere near the node's allowance.
+      expect(tx.gas).toBe((65_000n * 13n) / 10n);
+      expect(tx.gas! * tx.gasPrice!).toBeLessThan(parseEther("0.001"));
+    });
+
+    it("withdraws USDG from a wallet that holds only a little ETH", async () => {
+      const { userId, wallet, address } = await fundedWallet();
+      const fake = fakeChain(address, { eth: parseEther("0.001"), usdg: parseUnits("12", 6), gasPrice: 20_000_000n });
+      await wallets.withdraw({ userId, walletId: wallet.id, asset: "USDG", to: randomAddress(), amount: "5" }, fake.clients);
+      expect(fake.sent).toHaveLength(1);
+      const tx = parseTransaction(fake.sent[0]!);
+      expect(tx.gas! * tx.gasPrice!).toBeLessThan(parseEther("0.001"));
     });
 
     // Both switches are read again before every signature. A signer that is already open stops signing the
