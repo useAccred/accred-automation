@@ -300,6 +300,12 @@ export default function LandingPage() {
             <a href="https://github.com/useAccred" className="transition-colors hover:text-foreground">
               GitHub
             </a>
+            <Link href="/privacy" className="transition-colors hover:text-foreground">
+              Privacy
+            </Link>
+            <Link href="/terms" className="transition-colors hover:text-foreground">
+              Terms
+            </Link>
           </nav>
         </div>
       </footer>

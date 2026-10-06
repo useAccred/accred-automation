@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Logo } from "@/components/logo";
 import { getUser } from "@/lib/auth";
@@ -36,6 +37,17 @@ export default async function LoginPage() {
       </div>
       <p className="mt-6 max-w-md text-center text-xs text-faint">
         Tip: create a separate key just for automations, so you can revoke it without touching your other apps.
+      </p>
+      <p className="mt-4 text-center text-xs text-faint">
+        By continuing you agree to the{" "}
+        <Link href="/terms" className="underline underline-offset-4 hover:text-foreground">
+          terms
+        </Link>{" "}
+        and{" "}
+        <Link href="/privacy" className="underline underline-offset-4 hover:text-foreground">
+          privacy policy
+        </Link>
+        .
       </p>
     </main>
   );
