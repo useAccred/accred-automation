@@ -668,3 +668,17 @@ describe("canonicalMandate", () => {
     expect(canonicalMandate({ ...a, allowedAssets: a.allowedAssets.slice(0, 1) })).not.toBe(canonicalMandate(a));
   });
 });
+
+describe("check 14: a fill must cost less than the stop is wide", () => {
+  it("rejects a trade whose price impact reaches its stop loss, and passes one just inside it", () => {
+    const wide = (i: RiskInputs) => void ((i.mandate.maxPriceImpactPercent = 10), (i.mandate.maxSlippagePercent = 10));
+    // Stop 2%: an impact of 2% or more opens the position at or below its stop.
+    expectFail(14, (i) => void (wide(i), (i.proposal.stopLossPercent = 2), (i.quote!.priceImpactPercent = 2)));
+    expectFail(14, (i) => void (wide(i), (i.proposal.stopLossPercent = 2), (i.quote!.priceImpactPercent = 3.4)));
+    expectPass((i) => void (wide(i), (i.proposal.stopLossPercent = 2), (i.quote!.priceImpactPercent = 1.99)));
+    // The same fill is fine under a stop that is wider than it costs.
+    expectPass((i) => void (wide(i), (i.mandate.maxStopLossPercent = 10), (i.mandate.maxLossPerTradePercent = 10), (i.proposal.stopLossPercent = 8), (i.proposal.takeProfitPercent = 16), (i.quote!.priceImpactPercent = 3.4)));
+    // With no stated stop and none required, the mandate's default stop is the one that counts.
+    expectFail(14, (i) => void (wide(i), (i.mandate.stopLossRequired = false), (i.proposal.stopLossPercent = null), (i.quote!.priceImpactPercent = i.mandate.defaultStopLossPercent)));
+  });
+});

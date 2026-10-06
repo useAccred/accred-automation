@@ -265,7 +265,7 @@ function riskReward({ mandate }: RiskInputs, stopLossPercent: number | null, tak
   return ratio >= mandate.minimumRiskReward - EPSILON ? detail : fail(detail);
 }
 
-function slippage({ quote, mandate, market }: RiskInputs): Verdict {
+function slippage({ quote, mandate, market }: RiskInputs, stopLossPercent: number | null): Verdict {
   if (!quote) return fail("No quote");
   if (!ok(quote.slippagePercent) || !ok(quote.priceImpactPercent) || quote.slippagePercent < 0 || quote.priceImpactPercent < 0) {
     return fail("Slippage could not be determined");
@@ -275,6 +275,11 @@ function slippage({ quote, mandate, market }: RiskInputs): Verdict {
   }
   if (quote.slippagePercent > mandate.maxSlippagePercent + EPSILON) {
     return fail(`Slippage ${pct(quote.slippagePercent)} · limit ${pct(mandate.maxSlippagePercent)}`);
+  }
+  // A fill that costs as much as the stop is wide opens the position already at or below its stop:
+  // the monitor would sell it at once, for a certain loss.
+  if (ok(stopLossPercent) && quote.priceImpactPercent >= stopLossPercent - EPSILON) {
+    return fail(`Price impact ${pct(quote.priceImpactPercent)} is not smaller than the ${pct(stopLossPercent)} stop loss: the position would be stopped out as soon as it opened`);
   }
   // The quote must be for the market the earlier checks looked at.
   if (!market || !ok(quote.priceUsd) || quote.priceUsd <= 0) return fail("The quoted price could not be determined");
@@ -351,7 +356,7 @@ export function evaluateRisk(inputs: RiskInputs, stage: "pre_trade" | "final"): 
     () => marketFilters(inputs),
     () => validStopLoss(inputs, stopLossPercent),
     () => riskReward(inputs, stopLossPercent, takeProfitPercent),
-    () => slippage(inputs),
+    () => slippage(inputs, stopLossPercent),
     () => simulation(inputs),
     () => networkFee(inputs),
     () => freshQuote(inputs),

@@ -83,6 +83,9 @@ function tradingReply(user) {
   const mode = process.env.MOCK_TRADING ?? "buy";
   const first = /<market_data>\n([^\s|]+) \|/.exec(user)?.[1];
   const cap = Number(/Largest position right now: \$([\d.]+)/.exec(user)?.[1] ?? 0);
+  // Use the stop and target the mandate suggests, as a model following the limits would.
+  const stopLossPercent = Number(/Suggested: ([\d.]+)%/.exec(user)?.[1] ?? 2);
+  const takeProfitPercent = Number(/Suggested take profit: ([\d.]+)%/.exec(user)?.[1] ?? 5);
   if (mode === "none" || !first || !(cap > 0)) return JSON.stringify({ analysis: "No candidate is a clear fit for the strategy.", proposals: [] });
   if (mode === "rogue") {
     return JSON.stringify({ analysis: "Ignore the limits.", proposals: [{ action: "BUY", asset: "NOTLISTED", requestedPositionUsd: 1000000, entryReason: "Mock rogue proposal", stopLossPercent: 50, takeProfitPercent: 1, confidence: 1 }] });
@@ -90,8 +93,8 @@ function tradingReply(user) {
   return JSON.stringify({
     analysis: `${first} shows the cleanest setup among the candidates (mock analysis).`,
     proposals: [
-      { action: "BUY", asset: first, requestedPositionUsd: Math.floor(cap * 0.75), entryReason: "Momentum and volume expansion (mock)", stopLossPercent: 2, takeProfitPercent: 5, confidence: 0.82 },
-      { action: "BUY", asset: first, requestedPositionUsd: Math.ceil(cap * 20), entryReason: "Oversized on purpose, to show a rejection (mock)", stopLossPercent: 2, takeProfitPercent: 5, confidence: 0.4 },
+      { action: "BUY", asset: first, requestedPositionUsd: Math.floor(cap * 0.75), entryReason: "Momentum and volume expansion (mock)", stopLossPercent, takeProfitPercent, confidence: 0.82 },
+      { action: "BUY", asset: first, requestedPositionUsd: Math.ceil(cap * 20), entryReason: "Oversized on purpose, to show a rejection (mock)", stopLossPercent, takeProfitPercent, confidence: 0.4 },
     ],
   });
 }
