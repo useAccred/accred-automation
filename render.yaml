@@ -23,7 +23,7 @@ services:
       - key: CRON_SECRET
         generateValue: true
       # Add these in the dashboard (Environment tab) when ready:
-      #   APP_URL                 once a custom domain is attached, e.g. https://automation.accred.sh
+      #   APP_URL                 optional; only to force one public address (the app otherwise uses the visitor's domain)
       #   TELEGRAM_BOT_TOKEN      shared bot for one-click Telegram linking
       #   GOOGLE_CLIENT_ID        Gmail connection
       #   GOOGLE_CLIENT_SECRET    Gmail connection

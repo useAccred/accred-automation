@@ -5,18 +5,18 @@ import { getUser } from "@/lib/auth";
 import { GMAIL_SCOPE, describeGrant, exchangeGoogleCode, googleConfigured } from "@/lib/connections/gmail";
 import { encrypt } from "@/lib/crypto";
 import { connections, db } from "@/lib/db";
-import { env } from "@/lib/env";
+import { requestOrigin } from "@/lib/origin";
 
 const STATE_COOKIE = "accred_google_oauth_state";
 
-function back(result: string) {
-  return Response.redirect(`${env.appUrl}/app/connections?gmail=${result}`);
-}
+
 
 /** Google returns here after the consent screen. Stores the grant as a Gmail connection. */
 export async function GET(request: Request) {
+  const origin = await requestOrigin();
+  const back = (result: string) => Response.redirect(`${origin}/app/connections?gmail=${result}`);
   const user = await getUser();
-  if (!user) return Response.redirect(`${env.appUrl}/login`);
+  if (!user) return Response.redirect(`${origin}/login`);
   if (!googleConfigured()) return back("unconfigured");
 
   const url = new URL(request.url);
@@ -31,7 +31,7 @@ export async function GET(request: Request) {
   if (!code || !matches) return back("failed");
 
   try {
-    const grant = await exchangeGoogleCode(code);
+    const grant = await exchangeGoogleCode(code, origin);
     // People can untick a permission on Google's screen; without it the connection would be useless.
     if (!grant.scope?.split(" ").includes(GMAIL_SCOPE)) return back("noscope");
     if (!grant.refresh_token) return back("failed");

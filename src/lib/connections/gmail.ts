@@ -15,14 +15,15 @@ export function googleConfigured(): boolean {
   return Boolean(env.googleClientId && env.googleClientSecret);
 }
 
-export function googleRedirectUri(): string {
-  return `${env.appUrl}/api/oauth/google/callback`;
+/** `origin` is the public address of the current request; Google must return to the same domain it left from. */
+export function googleRedirectUri(origin: string): string {
+  return `${origin}/api/oauth/google/callback`;
 }
 
-export function googleAuthUrl(state: string): string {
+export function googleAuthUrl(state: string, origin: string): string {
   const params = new URLSearchParams({
     client_id: env.googleClientId ?? "",
-    redirect_uri: googleRedirectUri(),
+    redirect_uri: googleRedirectUri(origin),
     response_type: "code",
     scope: GMAIL_SCOPE,
     // "offline" with a forced consent screen is what makes Google return a refresh token.
@@ -59,8 +60,8 @@ async function tokenRequest(fields: Record<string, string>) {
   return body as { access_token: string; refresh_token?: string; expires_in?: number; scope?: string };
 }
 
-export async function exchangeGoogleCode(code: string) {
-  return tokenRequest({ code, grant_type: "authorization_code", redirect_uri: googleRedirectUri() });
+export async function exchangeGoogleCode(code: string, origin: string) {
+  return tokenRequest({ code, grant_type: "authorization_code", redirect_uri: googleRedirectUri(origin) });
 }
 
 // Access tokens last about an hour; keep them in memory, keyed by a hash of the refresh token.

@@ -11,7 +11,7 @@ import { requireUser } from "@/lib/auth";
 import { CONNECTION_KINDS, isConnectionKind } from "@/lib/connections/kinds";
 import { formatCredits } from "@/lib/credits";
 import { connections, db, runs } from "@/lib/db";
-import { env } from "@/lib/env";
+import { requestOrigin } from "@/lib/origin";
 import { RUN_STATUS, TRIGGER_LABEL, formatWhen, timeAgo } from "@/lib/format";
 import { getAutomation, listConnections } from "@/lib/queries";
 import { describeCron } from "@/lib/schedule";
@@ -47,7 +47,7 @@ export default async function AutomationPage({ params }: { params: Promise<{ id:
     creditsThisMonth(automation.id),
     listConnections(user.id),
   ]);
-  const webhookUrl = `${env.appUrl}/api/hooks/${automation.webhookToken}`;
+  const webhookUrl = `${await requestOrigin()}/api/hooks/${automation.webhookToken}`;
   const anyActive = history.some((run) => RUN_STATUS[run.status].active);
   const monthPercent = Math.min(100, Number((monthSpent * 100n) / (automation.maxPerMonthMicro || 1n)));
 

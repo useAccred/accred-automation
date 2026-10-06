@@ -18,6 +18,10 @@ export const env = {
     if (secret.length < 32) throw new Error("APP_SECRET must be at least 32 characters.");
     return secret;
   },
+  /** True when APP_URL is set explicitly, as opposed to falling back to the host's own address. */
+  get appUrlConfigured() {
+    return Boolean(read("APP_URL"));
+  },
   get appUrl() {
     // Render sets RENDER_EXTERNAL_URL to the service's public address.
     return (read("APP_URL") ?? read("RENDER_EXTERNAL_URL") ?? "http://localhost:3000").replace(/\/+$/, "");

@@ -1,6 +1,6 @@
 # Accred Automation
 
-The app behind `automation.accred.sh`. A user connects their apps, describes a job in plain words, and an agent runs it on a schedule, on a webhook, or on demand. Every model call is paid from the user's [Accred](https://accred.sh) credits, and each run ends with an exact receipt.
+The app behind `agent.accred.sh`. A user connects their apps, describes a job in plain words, and an agent runs it on a schedule, on a webhook, or on demand. Every model call is paid from the user's [Accred](https://accred.sh) credits, and each run ends with an exact receipt.
 
 ## How it works
 
@@ -76,7 +76,7 @@ The scheduler runs inside the server process and runs continue after the request
 
 **Render:** `render.yaml` describes the web service. Create it from the blueprint or with the Render CLI, set `DATABASE_URL` to a Postgres connection string, then add `TELEGRAM_BOT_TOKEN`, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` under Environment. Tables are created by `pnpm db:migrate` on every start. Use an always-on paid instance: a free web service sleeps when idle, and while asleep no schedule fires and the Telegram bot is not heard.
 
-- Set `DATABASE_URL`, `APP_SECRET`, `CRON_SECRET` and `APP_URL=https://automation.accred.sh`.
+- Set `DATABASE_URL`, `APP_SECRET` and `CRON_SECRET`. `APP_URL` is optional: without it the app uses the domain each request arrives on, so it works on every domain attached to it. Set it only to force one address.
 - Point the `automation` DNS record at the host.
 - Run one instance, or set `SCHEDULER=off` on all but one. As an alternative, set it off everywhere and have a cron call `POST /api/cron/tick` every minute with `Authorization: Bearer $CRON_SECRET`.
 - Keep `APP_SECRET` safe and unchanged: it encrypts every stored API key and connection secret.

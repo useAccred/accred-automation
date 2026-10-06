@@ -69,7 +69,7 @@ const webFetch = define({
   title: (args) => `Read ${args.url}`,
   async run(args) {
     const response = await safeFetch(args.url, {
-      headers: { "user-agent": "AccredAutomation/1.0 (+https://automation.accred.sh)", accept: "*/*" },
+      headers: { "user-agent": "AccredAutomation/1.0 (+https://agent.accred.sh)", accept: "*/*" },
     });
     if (!response.ok) throw new ToolError(`The page returned HTTP ${response.status}.`);
     if (isFeed(response.text)) return feedToText(response.text);

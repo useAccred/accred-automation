@@ -6,7 +6,7 @@ const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 const jetbrains = JetBrains_Mono({ variable: "--font-jetbrains", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.APP_URL ?? "https://automation.accred.sh"),
+  metadataBase: new URL(process.env.APP_URL ?? "https://agent.accred.sh"),
   title: {
     default: "Accred Automation — agents that pay per run",
     template: "%s · Accred Automation",
