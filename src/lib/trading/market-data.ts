@@ -55,8 +55,18 @@ const CACHE_MS = 10_000;
 /** A provider that failed is left alone for this long, unless it named its own wait, so requests do not queue up on it. */
 const REST_MS = 15_000;
 const MAX_REST_MS = 60_000;
-/** When every provider fails, all are asked once more after this pause. A shared host sends requests from several addresses, so a second try often lands. */
-const SECOND_TRY_PAUSE_MS = 700;
+/**
+ * Pauses before each further round of asking, when every provider has refused.
+ * The providers count requests per address in short windows, and a shared host's
+ * address is over the limit about as often as not, so a later try often lands.
+ */
+const RETRY_PAUSES_MS = [700, 2_500, 5_000];
+/**
+ * When no provider answers, the last snapshot is used again if it is no older
+ * than this. It keeps the time it was really fetched, so every check that
+ * refuses old data still judges it by its true age.
+ */
+const BRIDGE_MS = 75_000;
 
 /** Names and symbols are written by whoever deployed the token. Keep only harmless characters. */
 export function cleanSymbol(value: unknown, max = 16): string {
@@ -249,43 +259,49 @@ function providers(): Provider[] {
 }
 
 const cache = new Map<string, MarketSnapshot>();
-const restsUntil = new Map<string, number>();
+/** When each provider may be asked again. A wait the provider named itself is firm; our own default is not. */
+const rests = new Map<string, { until: number; firm: boolean }>();
 
 /**
  * Snapshots for one batch of addresses, from the first provider that answers.
- * A provider that fails rests for a while. If every provider fails, all of them
- * are asked once more; if that fails too, the error goes to the caller.
+ * A provider that refuses rests for as long as it asks, or a default. If every
+ * provider refuses, they are asked again after a pause, a few times over, except
+ * one still inside a wait it named itself. Then the error goes to the caller.
  */
 async function fetchBatch(chunk: string[]): Promise<Map<string, MarketSnapshot>> {
   const failures = new Map<string, string>();
-  for (const secondTry of [false, true]) {
-    // Nothing failed in the first pass only when every provider was resting: then there is nothing to wait for.
-    if (secondTry && failures.size > 0) await new Promise((resolve) => setTimeout(resolve, SECOND_TRY_PAUSE_MS));
+  for (let round = 0; round <= RETRY_PAUSES_MS.length; round++) {
+    // Nothing has failed yet only when every provider was resting: then there is nothing to wait for.
+    if (round > 0 && failures.size > 0) await new Promise((resolve) => setTimeout(resolve, RETRY_PAUSES_MS[round - 1]));
     for (const provider of providers()) {
-      // The first pass skips a provider that is resting. The second pass is the last chance, so it asks everyone.
-      if (!secondTry && Date.now() < (restsUntil.get(provider.name) ?? 0)) continue;
+      const rest = rests.get(provider.name);
+      // The first round skips any resting provider. Later rounds are the last chances, so only a wait the provider named is kept.
+      if (rest && Date.now() < rest.until && (round === 0 || rest.firm)) continue;
       try {
         return provider.parse(await getJson(provider.url(chunk), provider.headers), Date.now());
       } catch (error) {
         const failure = error instanceof MarketDataError ? error : new MarketDataError("failed");
-        const rest = Math.min(failure.retryAfterMs ?? REST_MS, MAX_REST_MS);
-        if (Date.now() >= (restsUntil.get(provider.name) ?? 0)) console.warn(`[market-data] ${provider.name} ${failure.message}; resting it for ${Math.round(rest / 1000)}s`);
-        restsUntil.set(provider.name, Date.now() + rest);
+        const wait = Math.min(failure.retryAfterMs ?? REST_MS, MAX_REST_MS);
+        if (!failures.has(provider.name)) console.warn(`[market-data] ${provider.name} ${failure.message}; resting it for ${Math.round(wait / 1000)}s`);
+        rests.set(provider.name, { until: Date.now() + wait, firm: failure.retryAfterMs !== undefined });
         failures.set(provider.name, failure.message);
       }
     }
   }
+  const resting = providers().filter((provider) => !failures.has(provider.name)).map((provider) => `${provider.name} asked to be left alone`);
   const limited = [...failures.values()].every((message) => message.includes("429"));
   throw new MarketDataError(
-    `${limited ? "The market data providers are limiting requests from this server" : "No market data provider answered"} (${[...failures].map(([name, message]) => `${name} ${message}`).join("; ")}).`,
+    `${limited ? "The market data providers are limiting requests from this server" : "No market data provider answered"} (${[...[...failures].map(([name, message]) => `${name} ${message}`), ...resting].join("; ")}).`,
     limited ? 429 : undefined,
   );
 }
 
 /**
  * Current snapshots for the given token addresses. A token with no pool on
- * Robinhood Chain is simply absent from the result. Throws MarketDataError when
- * both providers fail, so callers stop instead of trading on old numbers.
+ * Robinhood Chain is simply absent from the result. When no provider answers,
+ * a snapshot fetched in the last minute or so is used again with its real age;
+ * failing that it throws MarketDataError, so callers stop instead of trading on
+ * old numbers.
  */
 export async function fetchSnapshots(addresses: string[], options: { fresh?: boolean } = {}): Promise<Map<string, MarketSnapshot>> {
   const wanted = [...new Set(addresses.map((address) => address.toLowerCase()))].filter((address) => /^0x[0-9a-f]{40}$/.test(address));
@@ -298,7 +314,20 @@ export async function fetchSnapshots(addresses: string[], options: { fresh?: boo
   }
   for (let start = 0; start < missing.length; start += BATCH) {
     const chunk = missing.slice(start, start + BATCH);
-    for (const [address, snapshot] of await fetchBatch(chunk)) {
+    let found: Map<string, MarketSnapshot>;
+    try {
+      found = await fetchBatch(chunk);
+    } catch (error) {
+      const recent = chunk.flatMap((address) => {
+        const last = cache.get(address);
+        return last && Date.now() - last.fetchedAt <= BRIDGE_MS ? [[address, last] as const] : [];
+      });
+      // Bridge the gap only when every asset asked for has a recent snapshot; half an answer would read as "no pool".
+      if (recent.length < chunk.length) throw error;
+      for (const [address, snapshot] of recent) result.set(address, snapshot);
+      continue;
+    }
+    for (const [address, snapshot] of found) {
       if (!chunk.includes(address)) continue;
       cache.set(address, snapshot);
       result.set(address, snapshot);

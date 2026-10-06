@@ -481,8 +481,17 @@ describe("market data", () => {
   });
 
   describe("providers", () => {
-    afterEach(() => vi.unstubAllGlobals());
-    const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+    const reply = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers });
+    /** Runs a read to its end while skipping the pauses between rounds. */
+    const settle = async <T>(read: Promise<T>): Promise<T | Error> => {
+      const outcome = read.catch((error: unknown) => error as Error);
+      await vi.runAllTimersAsync();
+      return outcome;
+    };
 
     const hosts = (calls: string[]) => calls.map((url) => new URL(url).host);
 
@@ -503,19 +512,21 @@ describe("market data", () => {
       warn.mockRestore();
     });
 
-    it("asks every provider once more before giving up, and says they are limiting when they are", async () => {
+    it("asks every provider again over several rounds before giving up, and says they are limiting when they are", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout"] });
       const calls: string[] = [];
       vi.stubGlobal("fetch", async (url: string) => {
         calls.push(url);
         return reply(429, {});
       });
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const failure = await fetchSnapshots([`0x${"8".repeat(40)}`], { fresh: true }).catch((error: unknown) => error);
+      const failure = await settle(fetchSnapshots([`0x${"8".repeat(40)}`], { fresh: true }));
       expect(failure).toBeInstanceOf(MarketDataError);
       const { message } = failure as MarketDataError;
       expect(message).toContain("limiting requests from this server");
       for (const part of ["DexScreener returned HTTP 429", "DexScreener (latest) returned HTTP 429", "GeckoTerminal returned HTTP 429"]) expect(message).toContain(part);
-      // The last pass asked all three sources, resting or not.
+      // The first round skipped the two resting sources; each of the three later rounds asked all three.
+      expect(hosts(calls)).toHaveLength(1 + 3 * 3);
       expect(hosts(calls).slice(-3)).toEqual(["api.dexscreener.com", "api.dexscreener.com", "api.geckoterminal.com"]);
       warn.mockRestore();
     });
@@ -526,6 +537,44 @@ describe("market data", () => {
       vi.stubGlobal("fetch", async (url: string) => (url.includes("geckoterminal") ? reply(200, geckoReply(token, [geckoPool("robinhood_0xdeep", "900", token)])) : reply(429, {})));
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       expect((await fetchSnapshots([token], { fresh: true })).get(token)).toMatchObject({ source: "geckoterminal", liquidityUsd: 900 });
+      warn.mockRestore();
+    });
+
+    it("leaves a provider alone for as long as it asks, even in later rounds", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout"] });
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", async (url: string) => {
+        calls.push(url);
+        return url.includes("dexscreener") ? reply(429, {}, { "retry-after": "30" }) : reply(429, {});
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const failure = await settle(fetchSnapshots([`0x${"5".repeat(40)}`], { fresh: true }));
+      expect((failure as MarketDataError).message).toContain("DexScreener returned HTTP 429");
+      // Each DexScreener endpoint was asked once and then left alone; GeckoTerminal, which named no wait, was asked every round.
+      expect(hosts(calls).filter((host) => host === "api.dexscreener.com")).toHaveLength(2);
+      expect(hosts(calls).filter((host) => host === "api.geckoterminal.com").length).toBeGreaterThanOrEqual(3);
+      warn.mockRestore();
+    });
+
+    it("bridges a short gap with the last snapshot at its real age, and no longer", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+      vi.setSystemTime(NOW);
+      const token = `0x${"4".repeat(40)}`;
+      const other = `0x${"3".repeat(40)}`;
+      let up = true;
+      vi.stubGlobal("fetch", async (url: string) => (up && url.includes("geckoterminal") ? reply(200, geckoReply(token, [geckoPool("robinhood_0xdeep", "900", token)])) : reply(429, {})));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const first = await settle(fetchSnapshots([token], { fresh: true }));
+      expect((first as Map<string, MarketSnapshot>).get(token)).toMatchObject({ fetchedAt: NOW });
+      up = false;
+      vi.setSystemTime(NOW + 60_000);
+      const bridged = await settle(fetchSnapshots([token], { fresh: true }));
+      // Still stamped with the time it was really fetched, so the risk engine's own age limit applies.
+      expect((bridged as Map<string, MarketSnapshot>).get(token)).toMatchObject({ fetchedAt: NOW, source: "geckoterminal" });
+      // An asset with no recent snapshot is not papered over.
+      expect(await settle(fetchSnapshots([token, other], { fresh: true }))).toBeInstanceOf(MarketDataError);
+      vi.setSystemTime(NOW + 200_000);
+      expect(await settle(fetchSnapshots([token], { fresh: true }))).toBeInstanceOf(MarketDataError);
       warn.mockRestore();
     });
 
