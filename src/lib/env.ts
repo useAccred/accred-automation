@@ -67,6 +67,16 @@ export const env = {
   get lifiApiKey() {
     return read("LIFI_API_KEY");
   },
+  /**
+   * Optional CoinGecko API keys, for market data whose request limit belongs to
+   * the key. The public providers limit by address, which a shared host exceeds.
+   */
+  get coingeckoProApiKey() {
+    return read("COINGECKO_PRO_API_KEY");
+  },
+  get coingeckoDemoApiKey() {
+    return read("COINGECKO_DEMO_API_KEY");
+  },
   /** An extra Robinhood Chain RPC endpoint, tried before the public ones. HTTPS only. */
   get robinhoodRpcUrl() {
     const url = read("ROBINHOOD_RPC_URL");

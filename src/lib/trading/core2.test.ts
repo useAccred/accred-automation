@@ -484,26 +484,62 @@ describe("market data", () => {
     afterEach(() => vi.unstubAllGlobals());
     const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 
-    it("uses GeckoTerminal when DexScreener turns the request away, and rests DexScreener for a while", async () => {
+    const hosts = (calls: string[]) => calls.map((url) => new URL(url).host);
+
+    it("moves on to the next provider when one turns the request away, and rests the one that failed", async () => {
       const token = `0x${"7".repeat(40)}`;
       const calls: string[] = [];
       vi.stubGlobal("fetch", async (url: string) => {
         calls.push(url);
-        return url.includes("dexscreener") ? reply(403, {}) : reply(200, geckoReply(token, [geckoPool("robinhood_0xdeep", "24456.37", token)]));
+        return url.includes("dexscreener") ? reply(429, {}) : reply(200, geckoReply(token, [geckoPool("robinhood_0xdeep", "24456.37", token)]));
       });
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       expect((await fetchSnapshots([token])).get(token)).toMatchObject({ source: "geckoterminal", priceUsd: 0.000125 });
-      expect(calls.map((url) => new URL(url).host)).toEqual(["api.dexscreener.com", "api.geckoterminal.com"]);
-      expect(warn).toHaveBeenCalledOnce();
+      expect(hosts(calls)).toEqual(["api.dexscreener.com", "api.dexscreener.com", "api.geckoterminal.com"]);
+      expect(warn).toHaveBeenCalledTimes(2);
       // A fresh read straight after goes to GeckoTerminal without waiting on DexScreener again.
       await fetchSnapshots([token], { fresh: true });
-      expect(calls.map((url) => new URL(url).host).slice(2)).toEqual(["api.geckoterminal.com"]);
+      expect(hosts(calls).slice(3)).toEqual(["api.geckoterminal.com"]);
       warn.mockRestore();
     });
 
-    it("fails when both providers fail", async () => {
-      vi.stubGlobal("fetch", async () => reply(429, {}));
-      await expect(fetchSnapshots([`0x${"8".repeat(40)}`], { fresh: true })).rejects.toBeInstanceOf(MarketDataError);
+    it("asks every provider once more before giving up, and says they are limiting when they are", async () => {
+      const calls: string[] = [];
+      vi.stubGlobal("fetch", async (url: string) => {
+        calls.push(url);
+        return reply(429, {});
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const failure = await fetchSnapshots([`0x${"8".repeat(40)}`], { fresh: true }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(MarketDataError);
+      const { message } = failure as MarketDataError;
+      expect(message).toContain("limiting requests from this server");
+      for (const part of ["DexScreener returned HTTP 429", "DexScreener (latest) returned HTTP 429", "GeckoTerminal returned HTTP 429"]) expect(message).toContain(part);
+      // The last pass asked all three sources, resting or not.
+      expect(hosts(calls).slice(-3)).toEqual(["api.dexscreener.com", "api.dexscreener.com", "api.geckoterminal.com"]);
+      warn.mockRestore();
+    });
+
+    it("still asks resting providers as a last resort, and uses the one that has recovered", async () => {
+      const token = `0x${"9".repeat(40)}`;
+      // Every provider is resting after the test above.
+      vi.stubGlobal("fetch", async (url: string) => (url.includes("geckoterminal") ? reply(200, geckoReply(token, [geckoPool("robinhood_0xdeep", "900", token)])) : reply(429, {})));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      expect((await fetchSnapshots([token], { fresh: true })).get(token)).toMatchObject({ source: "geckoterminal", liquidityUsd: 900 });
+      warn.mockRestore();
+    });
+
+    it("asks a keyed CoinGecko source first when a key is set", async () => {
+      const token = `0x${"6".repeat(40)}`;
+      const calls: Array<{ url: string; key: string | null }> = [];
+      vi.stubEnv("COINGECKO_DEMO_API_KEY", "CG-test-key");
+      vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+        calls.push({ url, key: new Headers(init?.headers).get("x-cg-demo-api-key") });
+        return reply(200, geckoReply(token, [geckoPool("robinhood_0xdeep", "900", token)]));
+      });
+      expect((await fetchSnapshots([token], { fresh: true })).get(token)).toMatchObject({ source: "coingecko" });
+      expect(calls).toEqual([{ url: expect.stringContaining("https://api.coingecko.com/api/v3/onchain/networks/robinhood/tokens/multi/"), key: "CG-test-key" }]);
+      vi.unstubAllEnvs();
     });
   });
 

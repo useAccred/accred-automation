@@ -1,9 +1,13 @@
 /**
  * Market data for Robinhood Chain. Prices, liquidity and volume come from
- * DexScreener, or from GeckoTerminal when DexScreener cannot be reached; the
- * list of assets offered in the form comes from GeckoTerminal. Both are public
- * APIs that need no key.
+ * DexScreener or GeckoTerminal, whichever answers; the list of assets offered
+ * in the form comes from GeckoTerminal. Both are public APIs that need no key
+ * and limit requests per address, which a shared host's address often exceeds
+ * through no doing of this app. A CoinGecko API key, when set, adds a source
+ * whose limit belongs to the key instead.
  */
+
+import { env } from "../env";
 
 export interface MarketSnapshot {
   network: "robinhood";
@@ -28,18 +32,31 @@ export interface MarketSnapshot {
   dex: string;
   quoteSymbol: string;
   fetchedAt: number;
-  source: "dexscreener" | "geckoterminal";
+  source: "dexscreener" | "geckoterminal" | "coingecko";
 }
 
-export class MarketDataError extends Error {}
+export class MarketDataError extends Error {
+  constructor(
+    message: string,
+    /** The HTTP status the provider answered with, when it answered. */
+    readonly status?: number,
+    /** How long the provider asked to be left alone, when it said. */
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+  }
+}
 
 const NETWORK = "robinhood";
 const DEXSCREENER = "https://api.dexscreener.com";
 const GECKOTERMINAL = "https://api.geckoterminal.com/api/v2";
 const BATCH = 30;
 const CACHE_MS = 10_000;
-/** After DexScreener fails, it is left alone for this long, so each request does not wait on it again. */
-const PRIMARY_REST_MS = 60_000;
+/** A provider that failed is left alone for this long, unless it named its own wait, so requests do not queue up on it. */
+const REST_MS = 15_000;
+const MAX_REST_MS = 60_000;
+/** When every provider fails, all are asked once more after this pause. A shared host sends requests from several addresses, so a second try often lands. */
+const SECOND_TRY_PAUSE_MS = 700;
 
 /** Names and symbols are written by whoever deployed the token. Keep only harmless characters. */
 export function cleanSymbol(value: unknown, max = 16): string {
@@ -134,7 +151,7 @@ interface GeckoPool {
  * one snapshot per token, taken from its deepest pool. GeckoTerminal counts a
  * pool's depth more narrowly than DexScreener, so liquidity reads lower here.
  */
-export function snapshotsFromGecko(body: unknown, fetchedAt: number): Map<string, MarketSnapshot> {
+export function snapshotsFromGecko(body: unknown, fetchedAt: number, source: "geckoterminal" | "coingecko" = "geckoterminal"): Map<string, MarketSnapshot> {
   const found = new Map<string, MarketSnapshot>();
   const reply = body as { data?: GeckoToken[]; included?: GeckoPool[] } | null;
   if (!reply || !Array.isArray(reply.data)) return found;
@@ -177,45 +194,92 @@ export function snapshotsFromGecko(body: unknown, fetchedAt: number): Map<string
       dex: cleanSymbol(pool.relationships?.dex?.data?.id, 24),
       quoteSymbol: cleanSymbol(String(pool.attributes?.name ?? "").split(" / ")[isBase ? 1 : 0]),
       fetchedAt,
-      source: "geckoterminal",
+      source,
     });
   }
   return found;
 }
 
-async function getJson(url: string): Promise<unknown> {
+async function getJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(10_000), cache: "no-store" });
+    response = await fetch(url, { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(8_000), cache: "no-store" });
   } catch {
-    throw new MarketDataError("The market data provider could not be reached.");
+    throw new MarketDataError("could not be reached");
   }
-  if (!response.ok) throw new MarketDataError(`The market data provider returned HTTP ${response.status}.`);
+  if (!response.ok) {
+    const wait = Number(response.headers.get("retry-after"));
+    throw new MarketDataError(`returned HTTP ${response.status}`, response.status, Number.isFinite(wait) && wait > 0 ? wait * 1000 : undefined);
+  }
   try {
     return await response.json();
   } catch {
-    throw new MarketDataError("The market data provider sent an unreadable reply.");
+    throw new MarketDataError("sent an unreadable reply");
   }
 }
 
+interface Provider {
+  name: string;
+  url(addresses: string[]): string;
+  headers?: Record<string, string>;
+  parse(body: unknown, fetchedAt: number): Map<string, MarketSnapshot>;
+}
+
+/** Sources of token snapshots, in the order they are asked. Every one covers the same pools. */
+function providers(): Provider[] {
+  const list: Provider[] = [];
+  // A keyed source first: its limit is the key's own, not shared with other tenants of the host.
+  const pro = env.coingeckoProApiKey;
+  const demo = env.coingeckoDemoApiKey;
+  if (pro || demo) {
+    list.push({
+      name: "CoinGecko",
+      url: (addresses) => `https://${pro ? "pro-api" : "api"}.coingecko.com/api/v3/onchain/networks/${NETWORK}/tokens/multi/${addresses.join(",")}?include=top_pools`,
+      headers: pro ? { "x-cg-pro-api-key": pro } : { "x-cg-demo-api-key": demo! },
+      parse: (body, at) => snapshotsFromGecko(body, at, "coingecko"),
+    });
+  }
+  list.push(
+    { name: "DexScreener", url: (addresses) => `${DEXSCREENER}/tokens/v1/${NETWORK}/${addresses.join(",")}`, parse: snapshotsFromPairs },
+    // The same pairs from DexScreener's older endpoint, which is limited separately.
+    { name: "DexScreener (latest)", url: (addresses) => `${DEXSCREENER}/latest/dex/tokens/${addresses.join(",")}`, parse: (body, at) => snapshotsFromPairs((body as { pairs?: unknown } | null)?.pairs, at) },
+    { name: "GeckoTerminal", url: (addresses) => `${GECKOTERMINAL}/networks/${NETWORK}/tokens/multi/${addresses.join(",")}?include=top_pools`, parse: (body, at) => snapshotsFromGecko(body, at) },
+  );
+  return list;
+}
+
 const cache = new Map<string, MarketSnapshot>();
-let primaryRestsUntil = 0;
+const restsUntil = new Map<string, number>();
 
 /**
- * Snapshots for one batch of addresses. DexScreener turns away requests from
- * some hosting providers, so when it fails GeckoTerminal answers instead. If
- * both fail, the error goes to the caller.
+ * Snapshots for one batch of addresses, from the first provider that answers.
+ * A provider that fails rests for a while. If every provider fails, all of them
+ * are asked once more; if that fails too, the error goes to the caller.
  */
 async function fetchBatch(chunk: string[]): Promise<Map<string, MarketSnapshot>> {
-  if (Date.now() >= primaryRestsUntil) {
-    try {
-      return snapshotsFromPairs(await getJson(`${DEXSCREENER}/tokens/v1/${NETWORK}/${chunk.join(",")}`), Date.now());
-    } catch (error) {
-      primaryRestsUntil = Date.now() + PRIMARY_REST_MS;
-      console.warn("[market-data] DexScreener failed, using GeckoTerminal:", error instanceof Error ? error.message : error);
+  const failures = new Map<string, string>();
+  for (const secondTry of [false, true]) {
+    // Nothing failed in the first pass only when every provider was resting: then there is nothing to wait for.
+    if (secondTry && failures.size > 0) await new Promise((resolve) => setTimeout(resolve, SECOND_TRY_PAUSE_MS));
+    for (const provider of providers()) {
+      // The first pass skips a provider that is resting. The second pass is the last chance, so it asks everyone.
+      if (!secondTry && Date.now() < (restsUntil.get(provider.name) ?? 0)) continue;
+      try {
+        return provider.parse(await getJson(provider.url(chunk), provider.headers), Date.now());
+      } catch (error) {
+        const failure = error instanceof MarketDataError ? error : new MarketDataError("failed");
+        const rest = Math.min(failure.retryAfterMs ?? REST_MS, MAX_REST_MS);
+        if (Date.now() >= (restsUntil.get(provider.name) ?? 0)) console.warn(`[market-data] ${provider.name} ${failure.message}; resting it for ${Math.round(rest / 1000)}s`);
+        restsUntil.set(provider.name, Date.now() + rest);
+        failures.set(provider.name, failure.message);
+      }
     }
   }
-  return snapshotsFromGecko(await getJson(`${GECKOTERMINAL}/networks/${NETWORK}/tokens/multi/${chunk.join(",")}?include=top_pools`), Date.now());
+  const limited = [...failures.values()].every((message) => message.includes("429"));
+  throw new MarketDataError(
+    `${limited ? "The market data providers are limiting requests from this server" : "No market data provider answered"} (${[...failures].map(([name, message]) => `${name} ${message}`).join("; ")}).`,
+    limited ? 429 : undefined,
+  );
 }
 
 /**
@@ -258,7 +322,7 @@ const NOT_TRADED = new Set(["0x5fc5360d0400a0fd4f2af552add042d716f1d168", "0x0bd
 
 /** The most traded tokens on Robinhood Chain with real liquidity, for the asset picker. Empty when the provider fails. */
 export async function topAssets(): Promise<AssetOption[]> {
-  if (topCache && Date.now() - topCache.at < 5 * 60_000) return topCache.value;
+  if (topCache && Date.now() - topCache.at < 15 * 60_000) return topCache.value;
   try {
     const body = (await getJson(`${GECKOTERMINAL}/networks/${NETWORK}/pools?page=1&sort=h24_volume_usd_desc&include=base_token`)) as {
       data?: Array<{ attributes?: { reserve_in_usd?: string; volume_usd?: { h24?: string } }; relationships?: { base_token?: { data?: { id?: string } } } }>;
