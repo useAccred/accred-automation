@@ -1,4 +1,4 @@
-import { ArrowUpRight, Plus, Wallet } from "lucide-react";
+import { ArrowUpRight, BookOpen, Plus, Wallet } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { PageHeader } from "@/components/status";
@@ -32,6 +32,10 @@ export default async function TradingPage() {
         description="Give an AI agent a mandate on Robinhood Chain: a capped allocation, strict risk rules and the assets it may touch. It proposes; a deterministic risk engine decides."
         actions={
           <>
+            <Link href="/app/trading/guide" className="btn btn-secondary">
+              <BookOpen size={14} />
+              User guide
+            </Link>
             <Link href="/app/trading/wallets" className="btn btn-secondary">
               <Wallet size={14} />
               Wallets{wallets.length ? ` · ${wallets.length}` : ""}

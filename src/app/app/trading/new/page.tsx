@@ -47,9 +47,14 @@ export default async function NewTradingAgentPage() {
         title="Define exactly how your agent can trade"
         description="The agent researches the market and proposes trades on Robinhood Chain mainnet. Deterministic backend controls approve every one before anything moves. You are giving it a mandate, not your wallet."
         actions={
-          <Link href="/app/trading" className="btn btn-secondary">
-            Back
-          </Link>
+          <>
+            <Link href="/app/trading/guide" className="btn btn-secondary">
+              User guide
+            </Link>
+            <Link href="/app/trading" className="btn btn-secondary">
+              Back
+            </Link>
+          </>
         }
       />
       <TradingForm

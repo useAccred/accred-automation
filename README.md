@@ -28,7 +28,7 @@ Read-only: the connection asks Google for the `gmail.readonly` scope and gives a
 
 Under **Trading**, a user gives an agent a mandate on Robinhood Chain instead of access to a wallet: a dedicated wallet, a capped allocation, a risk mandate and a list of assets. The model proposes trades; a deterministic risk engine with seventeen checks approves or rejects each one, and a model-free monitor enforces stops, targets and circuit breakers.
 
-Agents trade **with real funds on Robinhood Chain mainnet** (chain ID 4663), buying and selling against USDG. Every swap is validated, simulated on the chain from the wallet, and only then signed; profit and loss are computed from transaction receipts. Trading is off unless `LIVE_TRADING=on` is set. [docs/TRADING_AGENT.md](docs/TRADING_AGENT.md) has the architecture, the security checklist and what must still be verified with real funds.
+Agents trade **with real funds on Robinhood Chain mainnet** (chain ID 4663), buying and selling against USDG. Every swap is validated, simulated on the chain from the wallet, and only then signed; profit and loss are computed from transaction receipts. Trading is off unless `LIVE_TRADING=on` is set. [docs/TRADING_AGENT.md](docs/TRADING_AGENT.md) has the architecture, the security checklist and what must still be verified with real funds. [docs/TRADING_USER_GUIDE.md](docs/TRADING_USER_GUIDE.md) is the manual for users, also shown in the app at `/app/trading/guide`, and [docs/PLAN_TRADING_AGENT.md](docs/PLAN_TRADING_AGENT.md) is the original plan.
 
 ### The agent loop
 
