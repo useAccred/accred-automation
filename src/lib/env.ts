@@ -19,7 +19,8 @@ export const env = {
     return secret;
   },
   get appUrl() {
-    return (read("APP_URL") ?? "http://localhost:3000").replace(/\/+$/, "");
+    // Render sets RENDER_EXTERNAL_URL to the service's public address.
+    return (read("APP_URL") ?? read("RENDER_EXTERNAL_URL") ?? "http://localhost:3000").replace(/\/+$/, "");
   },
   get accredBaseUrl() {
     return (read("ACCRED_BASE_URL") ?? "https://accred.sh").replace(/\/+$/, "");

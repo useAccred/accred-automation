@@ -1,0 +1,37 @@
+# Render blueprint: one web service and one Postgres database.
+# Deploy: https://render.com/deploy?repo=https://github.com/useAccred/accred-automation
+#
+# The free plans are for trying it out. A free web service sleeps when idle, and while it sleeps
+# no schedule fires and the Telegram bot is not heard. Use a paid instance for real use.
+databases:
+  - name: accred-automation-db
+    databaseName: accred_automation
+    plan: free
+    region: frankfurt
+
+services:
+  - type: web
+    name: accred-automation
+    runtime: node
+    plan: free
+    region: frankfurt
+    # Dev dependencies are needed to build (TypeScript, Tailwind) and to run migrations (drizzle-kit).
+    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm build
+    startCommand: pnpm db:migrate && pnpm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: accred-automation-db
+          property: connectionString
+      - key: APP_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+      # Add these in the dashboard afterwards (Environment tab):
+      #   APP_URL                 once a custom domain is attached, e.g. https://automation.accred.sh
+      #   TELEGRAM_BOT_TOKEN      shared bot for one-click Telegram linking
+      #   GOOGLE_CLIENT_ID        Gmail connection
+      #   GOOGLE_CLIENT_SECRET    Gmail connection
