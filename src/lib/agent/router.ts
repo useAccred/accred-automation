@@ -101,6 +101,58 @@ export function suggestedModels(catalog: Model[]): Record<Tier, Model> {
   return { smart: pickTier(models, "smart"), fast: pickTier(models, "fast"), top: pickTier(models, "top") };
 }
 
+/**
+ * Flagship models from the best-known makers, offered as one-click picks. Each
+ * entry lists patterns tried in order, because versions come and go; an entry
+ * with no match is left out.
+ */
+const FEATURED: RegExp[][] = [
+  [/claude-fable-5\.1$/, /claude-fable-5/],
+  [/claude-opus-5\.5$/, /^claude-opus-5$/, /claude-opus-5/, /claude-opus-4/],
+  [/claude-sonnet-5\.5$/, /^claude-sonnet-5$/, /claude-sonnet-5/, /claude-sonnet-4/],
+  [/^claude-haiku-4-5$/, /claude-haiku/],
+  [/^gpt-6-astra$/, /gpt-[\d.]+-astra$/],
+  [/^gpt-6\.1-sol$/, /^gpt-[\d.]+-sol$/, /gpt-[\d.]+-sol$/],
+  [/^gpt-6-luna$/, /^gpt-[\d.]+-luna$/, /gpt-[\d.]+-luna$/],
+  [/^gemini-3\.\d+-pro/, /gemini-[\d.]+-pro/],
+  [/gemini-3\.8-flash$/, /gemini-3\.\d+-flash$/],
+  [/grok-4\.7$/, /grok-4\.\d+$/, /grok-[\d.]+$/],
+  [/deepseek-v4(\.\d+)?-pro/, /deepseek-v[\d.]+/],
+  [/kimi-k3$/, /kimi-k[\d.]+$/],
+  [/qwen3-max$/, /qwen[\d.]*-max$/],
+  [/glm-5\.3$/, /glm-5(\.\d+)?$/],
+  [/mistral-large-4/, /mistral-large/],
+  [/minimax-m3$/, /minimax-m[\d.]+$/],
+  [/llama-4-maverick/, /llama-4/],
+];
+
+export function featuredModels(catalog: Model[]): Model[] {
+  const models = usableTextModels(catalog);
+  const picks: Model[] = [];
+  for (const prefer of FEATURED) {
+    for (const pattern of prefer) {
+      const match = models.find((model) => pattern.test(model.id));
+      if (!match) continue;
+      if (!picks.includes(match)) picks.push(match);
+      break;
+    }
+  }
+  return picks;
+}
+
+/**
+ * A name fit to show. Models listed by a provider directly are named by their
+ * id, so this borrows the name of the same model listed under its maker's
+ * prefix ("claude-haiku-4-5" reads as "Claude Haiku 4.5").
+ */
+export function displayName(model: Model, catalog: Model[]): string {
+  const withoutMaker = (name: string) => name.replace(/^[^:]{1,30}:\s+/, "");
+  if (model.name !== model.id) return withoutMaker(model.name);
+  const key = (id: string) => id.slice(id.lastIndexOf("/") + 1).replace(/[._-]/g, "").toLowerCase();
+  const twin = catalog.find((other) => other.name !== other.id && key(other.id) === key(model.id));
+  return twin ? withoutMaker(twin.name) : model.id;
+}
+
 /** Rough token count for text of mixed prose, JSON and URLs. Errs high so cost checks stay safe. */
 export function approxTokens(characters: number): number {
   return Math.ceil(characters / 3) + 16;

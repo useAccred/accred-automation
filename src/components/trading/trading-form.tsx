@@ -4,10 +4,12 @@ import { Plus, ShieldCheck, X } from "lucide-react";
 import Link from "next/link";
 import { useActionState, useState, useTransition } from "react";
 import { lookupAsset, saveTradingAgent } from "@/app/trading-actions";
+import { ModelLogo } from "@/components/model-logo";
 import { Notice } from "@/components/status";
 import { SubmitButton } from "@/components/ui";
 import { MODEL_MODES, type ModelMode } from "@/lib/agent/modes";
 import { CONNECTION_KINDS, type ConnectionKind } from "@/lib/connections/kinds";
+import { modelBrand } from "@/lib/model-brand";
 import type { FormCatalog } from "@/lib/queries";
 import { compactUsd, fmtUsd, shortAddress } from "@/lib/trading/format";
 import { NETWORK, PRESETS, positionCapUsd, presetMandate, profileOf, type Mandate, type MandateAsset, type RiskProfile } from "@/lib/trading/mandate";
@@ -54,6 +56,8 @@ type NumericKey = (typeof NUMERIC_KEYS)[number];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const chip = (on: boolean) =>
   `rounded-full border px-3 py-1.5 text-[13px] transition-colors ${on ? "border-primary bg-primary/15 text-foreground" : "border-line text-muted hover:border-line-strong hover:text-foreground"}`;
+/** Where a model sits by price, in the words a first-time user would use. */
+const priceTier = (outputUsdPerMillion: string) => (Number(outputUsdPerMillion) >= 16 ? "Premium" : Number(outputUsdPerMillion) > 5 ? "Balanced" : "Low cost");
 const tile = (on: boolean) => `cursor-pointer rounded-lg border p-3 text-left transition-colors ${on ? "border-primary bg-primary/10" : "border-line hover:border-line-strong"}`;
 
 export function TradingForm({
@@ -118,7 +122,8 @@ export function TradingForm({
   const wallet = wallets.find((option) => option.id === walletId);
   const allocation = mandate.agentAllocationUsd;
   const cap = complete ? positionCapUsd(mandate) : NaN;
-  const preview = modelMode === "pinned" ? undefined : catalog.preview[modelMode];
+  const pinned = modelMode === "pinned";
+  const chosen = catalog.models.find((model) => model.id === modelId);
   const execute = permissions.includes("EXECUTE_TRADE");
 
   const setNumber = (key: NumericKey, value: string) => setNumbers((current) => ({ ...current, [key]: value }));
@@ -162,6 +167,7 @@ export function TradingForm({
       <input type="hidden" name="walletId" value={walletId} />
       <input type="hidden" name="mandate" value={JSON.stringify(mandate)} />
       <input type="hidden" name="modelMode" value={modelMode} />
+      <input type="hidden" name="modelId" value={pinned ? modelId : ""} />
       {strategies.map((kind) => (
         <input key={kind} type="hidden" name="strategies" value={kind} />
       ))}
@@ -181,26 +187,82 @@ export function TradingForm({
           <input id="name" name="name" className="input" value={name} onChange={(event) => setName(event.target.value)} maxLength={80} placeholder="Momentum on Robinhood Chain" required />
         </div>
         {catalog.error && <Notice tone="warning">{catalog.error}</Notice>}
-        <fieldset className="grid gap-2 sm:grid-cols-2">
-          <legend className="label">AI model</legend>
-          {(Object.keys(MODEL_MODES) as ModelMode[]).map((mode) => (
-            <button key={mode} type="button" aria-pressed={modelMode === mode} onClick={() => setModelMode(mode)} className={tile(modelMode === mode)}>
-              <span className="block text-[13px] font-medium">{mode === "pinned" ? "Choose a model" : MODEL_MODES[mode].label}</span>
-              <span className="mt-1 block text-xs text-muted">
-                {mode === "auto" && "A strong model studies the market each cycle."}
-                {mode === "economy" && "A fast, cheap model. Lowest cost per cycle."}
-                {mode === "quality" && "A top model. Costs several times more per cycle."}
-                {mode === "pinned" && "Pick one model from the Accred catalog."}
-              </span>
-            </button>
-          ))}
+        <fieldset className="grid gap-2 sm:grid-cols-3">
+          <legend className="label">AI model · let Accred pick</legend>
+          {(["auto", "economy", "quality"] as const).map((mode) => {
+            const pick = catalog.preview[mode];
+            return (
+              <button key={mode} type="button" aria-pressed={modelMode === mode} onClick={() => setModelMode(mode)} className={tile(modelMode === mode)}>
+                <span className="block text-[13px] font-medium">{MODEL_MODES[mode].label}</span>
+                <span className="mt-1 block text-xs text-muted">
+                  {mode === "auto" && "A strong model studies the market each cycle."}
+                  {mode === "economy" && "A fast, cheap model. Lowest cost per cycle."}
+                  {mode === "quality" && "A top model. Costs several times more per cycle."}
+                </span>
+                {pick && (
+                  <span className="mt-2 flex items-center gap-1.5 text-xs text-muted">
+                    <ModelLogo modelId={pick.plannerId} size={16} />
+                    <span className="truncate">
+                      Now: <span className="text-foreground">{pick.planner}</span>
+                    </span>
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </fieldset>
-        {modelMode === "pinned" ? (
+        {catalog.featured.length > 0 && (
+          <fieldset className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <legend className="label">Or choose the model yourself</legend>
+            {catalog.featured.map((model) => {
+              const on = pinned && modelId === model.id;
+              return (
+                <button
+                  key={model.id}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => {
+                    setModelMode("pinned");
+                    setModelId(model.id);
+                  }}
+                  className={`${tile(on)} flex items-start gap-3`}
+                >
+                  <ModelLogo modelId={model.id} size={30} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-medium">{model.name}</span>
+                    <span className="mt-0.5 block text-xs text-muted">
+                      {modelBrand(model.id)?.label ?? "Other"} · {priceTier(model.output)}
+                    </span>
+                    <span className="mt-1 block font-mono text-[11px] text-muted">
+                      ${model.input} in / ${model.output} out
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </fieldset>
+        )}
+        {catalog.models.length > 0 && (
           <div>
-            <label className="label" htmlFor="modelId">
-              Model
+            <label className="label" htmlFor="modelSearch">
+              Any other model · search all {catalog.models.length}
             </label>
-            <input id="modelId" name="modelId" list="trading-model-options" className="input font-mono" value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder="Type to search the catalog" autoComplete="off" spellCheck={false} />
+            <div className="flex items-center gap-2">
+              <ModelLogo modelId={pinned ? modelId : ""} size={30} />
+              <input
+                id="modelSearch"
+                list="trading-model-options"
+                className="input font-mono"
+                value={pinned ? modelId : ""}
+                onChange={(event) => {
+                  setModelId(event.target.value);
+                  setModelMode(event.target.value ? "pinned" : "auto");
+                }}
+                placeholder="Type a name, for example grok or deepseek"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
             <datalist id="trading-model-options">
               {catalog.models.map((model) => (
                 <option key={model.id} value={model.id}>
@@ -208,17 +270,10 @@ export function TradingForm({
                 </option>
               ))}
             </datalist>
+            {pinned && modelId && !chosen && <p className="hint">Choose a model from the list to continue. What is typed here is not a model in the catalog.</p>}
           </div>
-        ) : (
-          <>
-            <input type="hidden" name="modelId" value="" />
-            {preview && (
-              <p className="rounded-lg border border-line bg-background p-3 text-[13px] text-muted">
-                Right now this means <span className="text-foreground">{preview.planner}</span>. The model only proposes trades. It holds no keys and cannot move funds.
-              </p>
-            )}
-          </>
         )}
+        <p className="hint">Prices are US dollars per 1 million tokens, paid from your Accred credits. The model only proposes trades. It holds no keys and cannot move funds.</p>
       </section>
 
       <section className="card space-y-4 p-5 sm:p-6">

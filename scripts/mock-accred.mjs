@@ -39,6 +39,23 @@ const MODELS = [
   model("claude-sonnet-5", "Claude Sonnet 5", "2", "10"),
   model("claude-haiku-4-5", "Claude Haiku 4.5", "1", "5"),
   model("claude-opus-5", "Claude Opus 5", "5", "25"),
+  // Flagships from other makers, with the ids and prices the real catalog uses, so the model picker can be tried locally.
+  model("anthropic/claude-fable-5.1", "Anthropic: Claude Fable 5.1", "10", "50"),
+  model("anthropic/claude-opus-5.5", "Anthropic: Claude Opus 5.5", "4", "20"),
+  model("anthropic/claude-sonnet-5.5", "Anthropic: Claude Sonnet 5.5", "2", "10"),
+  model("gpt-6-astra", "GPT-6 Astra", "10", "50"),
+  model("gpt-6.1-sol", "GPT-6.1 Sol", "2", "10"),
+  model("gpt-6-luna", "GPT-6 Luna", "0.1", "0.5"),
+  model("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview", "2", "12"),
+  model("google/gemini-3.8-flash", "Google: Gemini 3.8 Flash", "0.75", "3.75"),
+  model("x-ai/grok-4.7", "xAI: Grok 4.7", "2", "6"),
+  model("deepseek/deepseek-v4-pro", "DeepSeek: DeepSeek V4 Pro", "0.66", "1.98"),
+  model("moonshotai/kimi-k3", "MoonshotAI: Kimi K3", "0.69", "14"),
+  model("qwen/qwen3-max", "Qwen: Qwen3 Max", "0.78", "3.9"),
+  model("z-ai/glm-5.3", "Z.ai: GLM 5.3", "0.07", "7"),
+  model("mistralai/mistral-large-4-0", "Mistral: Mistral Large 4", "0.68", "2.09"),
+  model("minimax/minimax-m3", "MiniMax: MiniMax M3", "0.3", "1.2"),
+  model("meta-llama/llama-4-maverick", "Meta: Llama 4 Maverick", "0.1875", "0.6525"),
 ];
 
 const exact = (micro) => {

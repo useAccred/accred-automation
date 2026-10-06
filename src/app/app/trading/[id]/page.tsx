@@ -2,6 +2,7 @@ import { ArrowLeft, Ban, CircleStop, Pause, Pencil, Play, RefreshCw, Wallet } fr
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { closeAllPositions, closeOnePosition, pauseTradingAgent, resumeTradingAgent, revokeTradingAccess, runTradingCycleNow } from "@/app/trading-actions";
+import { ModelLogo } from "@/components/model-logo";
 import { Notice } from "@/components/status";
 import { AgentBadges, TradeStateBadge } from "@/components/trading/badges";
 import { DeleteAgentForm } from "@/components/trading/wallet-forms";
@@ -209,7 +210,8 @@ export default async function TradingAgentPage({ params, searchParams }: { param
         <div className="min-w-0">
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <AgentBadges mode={automation.mode} status={automation.status} pausedBy={automation.pausedBy} />
-            <span className="eyebrow">
+            <span className="eyebrow inline-flex items-center gap-1.5">
+              {automation.modelMode === "pinned" && automation.modelId && <ModelLogo modelId={automation.modelId} size={16} />}
               {automation.modelMode === "pinned" ? automation.modelId : `${automation.modelMode} model`} · {intervalLabel(automation.intervalMinutes)}
             </span>
           </div>
@@ -440,7 +442,8 @@ export default async function TradingAgentPage({ params, searchParams }: { param
                       {run.status === "skipped" ? "No model call" : run.status}
                     </span>
                     <span className="min-w-0 flex-1 basis-56 text-muted">{run.summary ?? run.error ?? "In progress"}</span>
-                    <span className="font-mono text-xs text-muted">
+                    <span className="inline-flex items-center gap-1.5 self-center font-mono text-xs text-muted">
+                      {run.model && <ModelLogo modelId={run.model} size={16} />}
                       {run.model ? `${run.model} · ${run.inputTokens.toLocaleString("en")} in / ${run.outputTokens.toLocaleString("en")} out · ${formatCredits(run.creditsMicro)} cr` : "0 cr"}
                     </span>
                     <span className="w-16 text-right text-xs text-muted">{timeAgo(run.createdAt)}</span>
