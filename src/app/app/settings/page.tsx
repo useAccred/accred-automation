@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { deleteAccount, signOut } from "@/app/actions";
-import { PageHeader } from "@/components/status";
+import Link from "next/link";
+import { Notice, PageHeader } from "@/components/status";
 import { ConfirmButton } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { getBalance } from "@/lib/balance";
@@ -10,12 +11,24 @@ import { ReplaceKeyForm } from "./replace-key-form";
 
 export const metadata: Metadata = { title: "Settings" };
 
-export default async function SettingsPage() {
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ blocked?: string }> }) {
   const user = await requireUser();
+  const { blocked } = await searchParams;
   const balance = await getBalance(user);
   return (
     <>
       <PageHeader title="Settings" />
+      {blocked === "wallets" && (
+        <div className="mb-6 max-w-2xl">
+          <Notice>
+            Your account was not deleted. A trading wallet still holds funds, or its balance could not be checked, and deleting the account destroys its key.{" "}
+            <Link href="/app/trading/wallets" className="underline underline-offset-4">
+              Withdraw everything first
+            </Link>
+            .
+          </Notice>
+        </div>
+      )}
       <div className="max-w-2xl space-y-6">
         <section className="card p-5 sm:p-6">
           <p className="eyebrow">Accred API key</p>
@@ -47,7 +60,7 @@ export default async function SettingsPage() {
           <div className="max-w-md">
             <p className="eyebrow !text-danger">Delete account</p>
             <p className="mt-2 text-[13px] text-muted">
-              Removes your automations, run history, connections and the stored key from this service. Your Accred account and credits are not affected.
+              Removes your automations, trading agents, run history, connections and the stored key from this service. Trading wallets must be emptied first. Your Accred account and credits are not affected.
             </p>
           </div>
           <form action={deleteAccount}>

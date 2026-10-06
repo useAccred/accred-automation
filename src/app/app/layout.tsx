@@ -19,6 +19,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <NavLink href="/app" exact>
               Automations
             </NavLink>
+            <NavLink href="/app/trading">Trading</NavLink>
             <NavLink href="/app/connections">Connections</NavLink>
             <NavLink href="/app/settings">Settings</NavLink>
           </nav>

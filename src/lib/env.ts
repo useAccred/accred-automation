@@ -40,6 +40,20 @@ export const env = {
   get googleClientSecret() {
     return read("GOOGLE_CLIENT_SECRET");
   },
+  /**
+   * Protects trading-wallet keys. When unset, a key is derived from APP_SECRET
+   * under its own label, so wallet keys still never share a key with stored API keys.
+   */
+  get tradingWalletSecret() {
+    const secret = read("TRADING_WALLET_SECRET");
+    if (secret && secret.length < 32) throw new Error("TRADING_WALLET_SECRET must be at least 32 characters.");
+    return secret;
+  },
+  /** An extra Robinhood Chain RPC endpoint, tried before the public ones. HTTPS only. */
+  get robinhoodRpcUrl() {
+    const url = read("ROBINHOOD_RPC_URL");
+    return url && /^https:\/\/[^\s]+$/.test(url) ? url : undefined;
+  },
   get cronSecret() {
     return read("CRON_SECRET");
   },

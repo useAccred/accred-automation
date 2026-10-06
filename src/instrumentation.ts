@@ -5,6 +5,9 @@ export async function register() {
   if (process.env.SCHEDULER === "off") return;
   const { startInternalScheduler } = await import("./lib/scheduler");
   startInternalScheduler();
+  // Protective exits run on their own timer, with no model in the loop.
+  const { startTradingMonitor } = await import("./lib/trading/monitor");
+  startTradingMonitor();
   const { startTelegramPolling } = await import("./lib/telegram");
   startTelegramPolling();
 }

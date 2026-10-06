@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { env } from "@/lib/env";
 import { tick } from "@/lib/scheduler";
+import { monitorTick, tradingTick } from "@/lib/trading/monitor";
 
 // Lets an external cron drive the scheduler when SCHEDULER=off. Call it every minute.
 async function handle(request: Request) {
@@ -11,7 +12,10 @@ async function handle(request: Request) {
   if (!secret || given.length !== expected.length || !timingSafeEqual(given, expected)) {
     return Response.json({ error: "Unauthorized." }, { status: 401 });
   }
-  return Response.json(await tick());
+  // The position monitor runs first, so protective exits never wait on new cycles.
+  const monitor = await monitorTick();
+  const [automations, trading] = await Promise.all([tick(), tradingTick()]);
+  return Response.json({ ...automations, trading: trading.started, positionsWatched: monitor.positions });
 }
 
 export const GET = handle;

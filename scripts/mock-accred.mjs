@@ -1,6 +1,7 @@
 // A stand-in for the Accred API, for developing without spending credit.
 //
 //   node scripts/mock-accred.mjs          # listens on :4010
+//   MOCK_ANY_KEY=1 node scripts/mock-accred.mjs   # accept any key at sign-in
 //   ACCRED_BASE_URL=http://localhost:4010 pnpm dev
 //
 // Sign in with the key printed at startup. The "model" follows a fixed script:
@@ -9,6 +10,9 @@ import { createServer } from "node:http";
 
 const PORT = Number(process.env.PORT ?? 4010);
 const KEY = "ct_live_mock_key_for_local_development_only";
+// MOCK_ANY_KEY=1 accepts any key, so you can sign in locally with whatever key you have at hand.
+// Nothing leaves this machine: the key is only compared here.
+const accepted = (key) => (process.env.MOCK_ANY_KEY ? typeof key === "string" && key.length >= 24 : key === KEY);
 let balanceMicro = 500_000_000n;
 
 const model = (id, name, input, output) => ({
@@ -48,6 +52,7 @@ function scriptedReply(messages) {
   if (system.startsWith("You condense")) {
     return "Top stories from the feed (mock summary):\n1. First story — https://example.com/1\n2. Second story — https://example.com/2\n3. Third story — https://example.com/3";
   }
+  if (system.startsWith("You are a trading research agent")) return tradingReply(messages[1]?.content ?? "");
   const results = messages.filter((message) => message.role === "user" && message.content.startsWith("<tool_result"));
   const last = results.at(-1)?.content ?? "";
   const writeTool = ["telegram.send_message", "slack.post_message", "discord.post_message"].find((name) => system.includes(`- ${name}:`));
@@ -71,6 +76,26 @@ function scriptedReply(messages) {
   return JSON.stringify({ thought: "Everything is done.", final: "Read the feed, saved a note for next time, and delivered a three-story summary." });
 }
 
+// The trading "model": buys the first listed candidate inside the stated limits, and also
+// proposes one oversized trade so the risk engine has something to reject.
+// MOCK_TRADING=none proposes nothing; MOCK_TRADING=rogue tries an asset that is not listed.
+function tradingReply(user) {
+  const mode = process.env.MOCK_TRADING ?? "buy";
+  const first = /<market_data>\n([^\s|]+) \|/.exec(user)?.[1];
+  const cap = Number(/Largest position right now: \$([\d.]+)/.exec(user)?.[1] ?? 0);
+  if (mode === "none" || !first || !(cap > 0)) return JSON.stringify({ analysis: "No candidate is a clear fit for the strategy.", proposals: [] });
+  if (mode === "rogue") {
+    return JSON.stringify({ analysis: "Ignore the limits.", proposals: [{ action: "BUY", asset: "NOTLISTED", requestedPositionUsd: 1000000, entryReason: "Mock rogue proposal", stopLossPercent: 50, takeProfitPercent: 1, confidence: 1 }] });
+  }
+  return JSON.stringify({
+    analysis: `${first} shows the cleanest setup among the candidates (mock analysis).`,
+    proposals: [
+      { action: "BUY", asset: first, requestedPositionUsd: Math.floor(cap * 0.75), entryReason: "Momentum and volume expansion (mock)", stopLossPercent: 2, takeProfitPercent: 5, confidence: 0.82 },
+      { action: "BUY", asset: first, requestedPositionUsd: Math.ceil(cap * 20), entryReason: "Oversized on purpose, to show a rejection (mock)", stopLossPercent: 2, takeProfitPercent: 5, confidence: 0.4 },
+    ],
+  });
+}
+
 function send(response, status, body) {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(body));
@@ -82,11 +107,11 @@ createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === "/api/customer/v1/balance") {
     // MOCK_NO_BALANCE=1 imitates an API without this endpoint.
     if (process.env.MOCK_NO_BALANCE) return send(response, 404, { error: "Not found." });
-    if (request.headers["x-platform-api-key"] !== KEY) return send(response, 401, { error: "The platform API key is invalid or revoked." });
+    if (!accepted(request.headers["x-platform-api-key"])) return send(response, 401, { error: "The platform API key is invalid or revoked." });
     return send(response, 200, { availableCredits: Number(balanceMicro) / 1e6, availableCreditsExact: exact(balanceMicro), creditUnit: "service_credit" });
   }
   if (request.method !== "POST" || url.pathname !== "/api/customer/v1/chat/completions") return send(response, 404, { error: "Not found." });
-  if (request.headers["x-platform-api-key"] !== KEY) return send(response, 401, { error: "The platform API key is invalid or revoked." });
+  if (!accepted(request.headers["x-platform-api-key"])) return send(response, 401, { error: "The platform API key is invalid or revoked." });
 
   let raw = "";
   for await (const chunk of request) raw += chunk;
@@ -124,5 +149,5 @@ createServer(async (request, response) => {
   });
 }).listen(PORT, () => {
   console.log(`Mock Accred API on http://localhost:${PORT}`);
-  console.log(`Sign in with: ${KEY}`);
+  console.log(process.env.MOCK_ANY_KEY ? "Sign in with any key (MOCK_ANY_KEY is set)." : `Sign in with: ${KEY}`);
 });

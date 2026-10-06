@@ -24,6 +24,12 @@ Users link a chat by pressing Start in a bot, so nobody looks up a chat ID. Two 
 
 Read-only: the connection asks Google for the `gmail.readonly` scope and gives agents `gmail.search` and `gmail.read`. To enable it, create an OAuth client (type "Web application") in Google Cloud with the Gmail API turned on, add `APP_URL/api/oauth/google/callback` as an authorised redirect URI, and set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. While the Google app is in "Testing", only the test users listed on its consent screen can connect, and their access lapses after 7 days. Opening it to everyone requires Google's verification, which for this scope includes a security assessment.
 
+### Trading agents
+
+Under **Trading**, a user gives an agent a mandate on Robinhood Chain instead of access to a wallet: a dedicated wallet, a capped allocation, a risk mandate and a list of assets. The model proposes trades; a deterministic risk engine with seventeen checks approves or rejects each one, and a model-free monitor enforces stops, targets and circuit breakers.
+
+Agents run in **Paper Mode**: live market data and the real risk engine, with fills modelled and nothing signed. **Live Mode is locked in code** until swap execution, onchain simulation and a signing design have been built and reviewed. [docs/TRADING_AGENT.md](docs/TRADING_AGENT.md) has the architecture, the security checklist and the list of what blocks Live Mode.
+
 ### The agent loop
 
 The Accred API is text in, text out, with no native tool calling. So the agent speaks a small JSON protocol (`src/lib/agent/protocol.ts`): each model reply is one object that either calls a tool or finishes. The runner (`src/lib/agent/runner.ts`) validates the reply, runs the tool, and feeds the result back, until the job is done or a limit is reached.
@@ -65,7 +71,7 @@ Sign in with the key the mock prints. Its "model" follows a fixed script: read a
 | `pnpm build` / `pnpm start` | Production build and server |
 | `pnpm typecheck` | TypeScript check |
 | `pnpm lint` | ESLint |
-| `pnpm test` | Unit tests (protocol, routing, credit math, schedules, outbound request rules) |
+| `pnpm test` | Unit tests (protocol, routing, credit math, schedules, outbound request rules, trading risk engine). Set `TRADING_TEST_DATABASE_URL` to also run the trading tests that need Postgres |
 | `pnpm db:push` | Apply the schema straight to a development database |
 | `pnpm db:generate` | Write a migration file after changing the schema |
 | `pnpm db:migrate` | Apply migration files (used in production) |
@@ -87,6 +93,7 @@ The scheduler runs inside the server process and runs continue after the request
 src/app/                 pages, server actions, webhook and cron routes
 src/components/          shared UI
 src/lib/agent/           protocol, model routing, tools, runner, outbound fetch
+src/lib/trading/         trading agents: mandate, risk engine, paper execution, position monitor, wallets
 src/lib/db/              Drizzle schema and client
 src/lib/connections/     connection types and their fields
 src/lib/templates.ts     starter automations
