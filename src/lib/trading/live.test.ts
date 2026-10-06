@@ -116,6 +116,26 @@ describe.skipIf(!url)("live trading against the database and a fake chain", () =
     return app.monitorTick(fake.deps);
   };
 
+  // Found by the first real trade: a $3 buy in a thin pool filled 3.76% above the market price, inside the 5%
+  // price impact the mandate allowed, and the monitor paused the agent for "abnormal slippage" because the fill's
+  // distance from the market price had been recorded as its slippage. Slippage is the shortfall against the simulation.
+  it("a: a fill inside its price-impact limit is not abnormal slippage", async () => {
+    const agent = await liveAgent({ mandate: { maxSlippagePercent: 1, maxPriceImpactPercent: 5, maxStopLossPercent: 10, maxLossPerTradePercent: 10 } });
+    const fake = funded(agent, 1000, 10n ** 16n, { replies: [modelReply(buy(agent.assets[0]!.symbol, 100, { stopLossPercent: 8, takeProfitPercent: 16 }))] });
+    fake.state.venue.impactPercent = 3.76;
+    const result = await app.runTradingCycle(agent.automationId, "manual", fake.deps);
+    expect(result?.status, result?.summary).toBe("completed");
+    const [execution] = await by(agent).executions();
+    expect(execution).toMatchObject({ status: "filled", side: "buy" });
+    // The swap delivered exactly what its simulation did, so there was no slippage.
+    expect(execution!.slippagePercent).toBe(0);
+    // The cost of the fill against the market price is recorded as what it is.
+    expect((execution!.quote as { filledImpactPercent?: number }).filledImpactPercent).toBeCloseTo(3.76, 3);
+    await tick(fake);
+    expect(await by(agent).automation()).toMatchObject({ status: "running", pausedBy: null });
+    expect((await by(agent).positions())[0]!.status).toBe("open");
+  });
+
   it("a: opens a live position end to end from the actual fill", async () => {
     const agent = await liveAgent();
     const { state, chain, position } = await openLive(agent);

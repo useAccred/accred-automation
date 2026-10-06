@@ -46,6 +46,16 @@ const usd = (value: number) => `$${value.toFixed(2)}`;
 /** Token prices keep significant digits: many trade at fractions of a cent. */
 const price = (value: number) => `$${value >= 1 ? value.toFixed(4) : Number(value.toPrecision(5))}`;
 const tokens = (raw: bigint, decimals: number) => Number(formatUnits(raw, decimals));
+/**
+ * Slippage of a live fill: how far the swap fell short of what its simulation delivered, as a percentage.
+ * This is what "abnormal slippage" watches. The gap between the fill and the market price is something
+ * else, the price impact, which the mandate limits before the trade and which is recorded beside it.
+ */
+function shortfallPercent(deliveredRaw: bigint, simulatedRaw: unknown): number {
+  if (typeof simulatedRaw !== "string" || !/^\d+$/.test(simulatedRaw) || simulatedRaw === "0") return 0;
+  return Math.max(0, (1 - Number(deliveredRaw) / Number(BigInt(simulatedRaw))) * 100);
+}
+
 const EXIT_ACTOR = { agent_close: "agent", manual_close: "user", close_all: "user" } as const;
 const exitActor = (reason: ExitReason) => (reason in EXIT_ACTOR ? EXIT_ACTOR[reason as keyof typeof EXIT_ACTOR] : "monitor");
 
@@ -285,7 +295,7 @@ export async function settleEntry(executionId: string, fill: Fill, now: number):
     const [proposal] = await tx.select().from(tradeProposals).where(eq(tradeProposals.id, execution.proposalId));
     if (!proposal) return { status: "duplicate" };
     const ref: ProposalRef = { id: proposal.id, automationId: proposal.automationId, userId: proposal.userId, runId: proposal.runId, state: proposal.state };
-    const plan = (execution.quote ?? {}) as { stopLossPercent?: number; takeProfitPercent?: number; marketPriceUsd?: number; lifetimeHours?: number; tokenDecimals?: number };
+    const plan = (execution.quote ?? {}) as { stopLossPercent?: number; takeProfitPercent?: number; marketPriceUsd?: number; lifetimeHours?: number; tokenDecimals?: number; simulatedOutRaw?: string };
 
     if (!fill.ok) {
       if (fill.uncertain) {
@@ -355,7 +365,8 @@ export async function settleEntry(executionId: string, fill: Fill, now: number):
         priceUsd: entryPriceUsd,
         notionalUsd: spentUsd,
         networkFeeUsd: fill.gasUsd,
-        slippagePercent: Math.max(0, (entryPriceUsd / mid - 1) * 100),
+        slippagePercent: shortfallPercent(fill.outRaw, plan.simulatedOutRaw),
+        quote: sql`coalesce(${executions.quote}, '{}'::jsonb) || ${JSON.stringify({ filledImpactPercent: Math.max(0, (entryPriceUsd / mid - 1) * 100) })}::jsonb`,
         txHash: fill.txHash,
         approveTxHash: fill.approveTxHash ?? null,
         error: null,
@@ -563,6 +574,12 @@ async function liveExit(input: { positionId: string; reason: ExitReason; fractio
 
   // ── Trade ───────────────────────────────────────────────────────────────────
   const quote = await venue.quote({ side: "sell", wallet: plan.walletAddress, token: plan.token, amountInRaw: plan.sellRaw, slippagePercent: plan.slippagePercent, market, now });
+  if (quote.simulatedOutRaw) {
+    await db
+      .update(executions)
+      .set({ quote: sql`coalesce(${executions.quote}, '{}'::jsonb) || ${JSON.stringify({ simulatedOutRaw: quote.simulatedOutRaw, tool: quote.tool })}::jsonb` })
+      .where(eq(executions.id, plan.executionId));
+  }
   const fill: Fill = quote.simulation.ok
     ? await venue.execute({
         walletId: plan.walletId,
@@ -623,7 +640,8 @@ export async function settleExit(executionId: string, fill: Fill, now: number): 
     const pnlUsd = proceedsUsd - position.entryPriceUsd * quantity;
     const remainingRaw = held - soldRaw;
     const remaining = tokens(remainingRaw, position.tokenDecimals);
-    const asked = (execution.quote ?? {}) as { full?: boolean; marketPriceUsd?: number };
+    const asked = (execution.quote ?? {}) as { full?: boolean; marketPriceUsd?: number; simulatedOutRaw?: string };
+    const slippagePercent = shortfallPercent(fill.outRaw, asked.simulatedOutRaw);
     const closed = asked.full === true || remainingRaw === 0n || remaining * position.entryPriceUsd < 0.01;
     const mid = asked.marketPriceUsd ?? priceUsd;
 
@@ -636,7 +654,8 @@ export async function settleExit(executionId: string, fill: Fill, now: number): 
         priceUsd,
         notionalUsd: proceedsUsd,
         networkFeeUsd: fill.gasUsd,
-        slippagePercent: Math.max(0, (1 - priceUsd / mid) * 100),
+        slippagePercent,
+        quote: sql`coalesce(${executions.quote}, '{}'::jsonb) || ${JSON.stringify({ filledImpactPercent: Math.max(0, (1 - priceUsd / mid) * 100) })}::jsonb`,
         realizedPnlUsd: pnlUsd,
         txHash: fill.txHash,
         approveTxHash: fill.approveTxHash ?? null,
@@ -655,7 +674,7 @@ export async function settleExit(executionId: string, fill: Fill, now: number): 
         ...(closed ? { status: "closed" as const, closedAt: new Date(now), closeReason: reason } : { partialTaken: true }),
       })
       .where(eq(positions.id, position.id));
-    await recordExit(tx, position, { executionId, reason, closed, priceUsd, quantity, pnlUsd, feesUsd: fill.gasUsd, slippagePercent: Math.max(0, (1 - priceUsd / mid) * 100), txHash: fill.txHash });
+    await recordExit(tx, position, { executionId, reason, closed, priceUsd, quantity, pnlUsd, feesUsd: fill.gasUsd, slippagePercent, txHash: fill.txHash });
     return { status: "filled", closed, symbol: position.symbol, priceUsd, soldUsd: proceedsUsd, pnlUsd, feesUsd: fill.gasUsd, automationId: position.automationId, txHash: fill.txHash };
   });
 }
