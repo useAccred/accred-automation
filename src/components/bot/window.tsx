@@ -129,6 +129,28 @@ export function BotWindow({
       </aside>
 
       <section className="flex min-w-0 flex-1 flex-col">
+        {/* Phones have no sidebar: a strip of faces switches bots instead. */}
+        <div className="flex flex-none items-center gap-2 overflow-x-auto border-b border-white/[0.07] px-3 py-2.5 md:hidden" role="tablist" aria-label="Bots">
+          {bots.map((bot) => (
+            <button
+              key={bot.id}
+              type="button"
+              role="tab"
+              aria-selected={bot.id === activeId}
+              onClick={() => onSelect(bot.id)}
+              className={`flex flex-none items-center gap-2 rounded-full py-1 pl-1 pr-3 text-[13px] transition-colors ${bot.id === activeId ? "bw-selected text-white" : "text-white/60"}`}
+            >
+              <Avatar bot={bot} size={26} />
+              <span className="max-w-[9rem] truncate">{bot.name}</span>
+              {bot.typing ? <span className="bw-dot" /> : null}
+            </button>
+          ))}
+          {onNew ? (
+            <button type="button" onClick={onNew} className="bw-icon h-8 w-8 flex-none" aria-label="New bot">
+              <Plus size={18} strokeWidth={1.6} />
+            </button>
+          ) : null}
+        </div>
         <header className="flex h-[66px] flex-none items-center justify-between border-b border-white/[0.07] px-5">
           <div className="flex min-w-0 items-center gap-3">
             {active ? <Avatar bot={active} size={26} /> : null}
@@ -142,7 +164,7 @@ export function BotWindow({
           </div>
         </header>
 
-        <div ref={scroller} className="bw-thread flex-1 overflow-y-auto px-6 py-4">
+        <div ref={scroller} className="bw-thread flex-1 overflow-y-auto px-3 py-4 sm:px-6">
           {thread.length === 0 && !typing ? empty : null}
           <ol className="mx-auto flex max-w-[1000px] flex-col gap-3">
             {thread.map((item) => (
@@ -162,7 +184,7 @@ export function BotWindow({
           </ol>
         </div>
 
-        <div className="flex-none px-6 pb-6 pt-2">{composer}</div>
+        <div className="flex-none px-3 pb-3 pt-2 sm:px-6 sm:pb-6">{composer}</div>
       </section>
     </div>
   );
@@ -190,11 +212,11 @@ export function Avatar({ bot, size }: { bot: Pick<SidebarBot, "color" | "shape" 
 
 function Item({ item }: { item: ThreadItem }) {
   if (item.type === "time") return <span className="py-1 text-[15px] text-white/40">{item.label}</span>;
-  if (item.type === "user") return <span className="bw-user max-w-[78%] rounded-[22px] px-5 py-3.5 text-[18px] leading-[1.4] whitespace-pre-wrap">{item.text}</span>;
+  if (item.type === "user") return <span className="bw-user max-w-[85%] rounded-[22px] px-4 py-3 text-[16px] leading-[1.4] whitespace-pre-wrap sm:max-w-[78%] sm:px-5 sm:py-3.5 sm:text-[18px]">{item.text}</span>;
   if (item.type === "bot") {
     return (
-      <span className="group flex max-w-[82%] flex-col items-start">
-        <span className={`bw-bot rounded-[22px] px-5 py-3.5 text-[18px] leading-[1.45] ${item.tone === "error" ? "text-[#f0a3a3]" : ""}`}>
+      <span className="group flex max-w-[90%] flex-col items-start sm:max-w-[82%]">
+        <span className={`bw-bot rounded-[22px] px-4 py-3 text-[16px] leading-[1.45] sm:px-5 sm:py-3.5 sm:text-[18px] ${item.tone === "error" ? "text-[#f0a3a3]" : ""}`}>
           <Rich text={item.text} />
         </span>
         {item.receipt ? <span className="mt-1 px-2 text-[12px] text-white/35 opacity-0 transition-opacity group-hover:opacity-100">{item.receipt}</span> : null}

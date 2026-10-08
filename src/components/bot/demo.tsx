@@ -23,7 +23,7 @@ export function DemoWindow() {
       onSelect={setActiveId}
       thread={thread}
       person={DEMO_PERSON}
-      className="h-[720px] w-full"
+      className="h-[560px] w-full sm:h-[720px]"
       composer={
         <Composer
           placeholder={`Message ${bot.name}`}

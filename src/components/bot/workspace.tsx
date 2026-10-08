@@ -294,7 +294,7 @@ export function BotWorkspace({ initialBots, person, models, createPreset }: { in
 
 function Panel({ title, onClose, children }: { title: string; onClose(): void; children: React.ReactNode }) {
   return (
-    <div className="bw absolute inset-y-3 right-3 z-10 flex w-[min(420px,calc(100%-1.5rem))] flex-col rounded-[24px] border border-white/[0.1] shadow-2xl">
+    <div className="bw absolute inset-y-2 right-2 z-10 flex w-[min(420px,calc(100%-1rem))] flex-col rounded-[24px] border border-white/[0.1] shadow-2xl sm:inset-y-3 sm:right-3">
       <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-4">
         <p className="text-[17px]">{title}</p>
         <button type="button" className="bw-icon" aria-label="Close" onClick={onClose}>
