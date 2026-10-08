@@ -33,6 +33,10 @@ export const env = {
   get telegramBotToken() {
     return read("TELEGRAM_BOT_TOKEN");
   },
+  /** "off" when another process (the Telegram agent) polls the shared bot; this app then only sends. */
+  get telegramPolling() {
+    return read("TELEGRAM_POLLING") === "off" ? "off" : "on";
+  },
   /** OAuth client from Google Cloud, for the Gmail connection. */
   get googleClientId() {
     return read("GOOGLE_CLIENT_ID");

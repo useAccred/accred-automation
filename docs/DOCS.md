@@ -431,11 +431,11 @@ The agent page shows the **Net result** after all of these.
 
 ## 14a. The Telegram agent
 
-The whole platform in one Telegram chat. Open the Accred bot, paste your API key once, and talk to it in plain words. It answers with any model, runs jobs, controls and creates trading agents, and keeps working while you are away.
+The whole platform in one Telegram chat. Open **@AccredAgentbot**, paste your API key once, and talk to it in plain words. The bot runs as its own service, [accred-telegram-agent](https://github.com/useAccred/accred-telegram-agent), on this app's engine and database. It answers with any model, runs jobs, controls and creates trading agents, and keeps working while you are away.
 
 ### Getting started
 
-1. Open the Accred bot in Telegram and press **Start**.
+1. Open @AccredAgentbot in Telegram and press **Start**.
 2. Paste your Accred API key. The message is deleted as soon as the bot reads it, and the key is stored encrypted. A chat you linked earlier with **Connect** on the Connections page is linked already.
 3. Ask anything, or say what you want done.
 
@@ -488,7 +488,7 @@ Each reply is paid from your credits with the exact amount recorded. Defaults: 3
 - Decide a trade. The risk engine decides every trade inside the mandate; the chat model only reports.
 - Work in group chats.
 
-The plan and design are in [PLAN_TELEGRAM_AGENT.md](PLAN_TELEGRAM_AGENT.md).
+The plan and design are in the bot's repository: [docs/PLAN.md](https://github.com/useAccred/accred-telegram-agent/blob/main/docs/PLAN.md).
 
 ## 15. Security and privacy
 
@@ -621,7 +621,6 @@ src/app/                 pages, server actions, webhook, OAuth and cron routes
 src/components/          shared UI
 src/lib/agent/           protocol, model routing, tools, runner, outbound fetch
 src/lib/trading/         trading agents: mandate, risk engine, live execution, position monitor, wallets
-src/lib/bot/             the Telegram agent
 src/lib/connections/     connection types and their fields
 src/lib/db/              database schema and client
 src/lib/templates.ts     starter automations
@@ -640,7 +639,6 @@ scripts/mock-accred.mjs  local stand-in for the Accred API
 | `src/lib/crypto.ts` | Encryption of keys, secrets and wallet keys |
 | `src/lib/auth.ts` | Sessions and rate limits |
 | `src/lib/telegram.ts` | Linking Telegram chats and receiving bot updates |
-| `src/lib/bot/` | The Telegram agent: router, conversation loop, tools, confirmations, heartbeat |
 | `src/lib/connections/gmail.ts` | Google sign-in and reading mail |
 
 ### Data
@@ -683,6 +681,7 @@ Sign in with the key the mock prints.
 | `APP_URL` | For local development | The public address. In production the app uses the domain each request arrives on |
 | `SCHEDULER` | No | `internal` (default) runs the scheduler inside the server. `off` leaves it to an external cron |
 | `TELEGRAM_BOT_TOKEN` | No | The shared Telegram bot. Without it, users link their own bot |
+| `TELEGRAM_POLLING` | With the Telegram agent | `off` when accred-telegram-agent polls the same bot; this app then only sends |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | No | The Google OAuth client for Gmail |
 | `ACCRED_BASE_URL` | No | The Accred API address. Default `https://accred.sh` |
 | `ROUTER_SMART_MODEL`, `ROUTER_FAST_MODEL`, `ROUTER_TOP_MODEL` | No | Override the model behind each tier |
@@ -776,7 +775,7 @@ For trading agents, see [Questions and problems](TRADING_USER_GUIDE.md#14-questi
 | [TRADING_AGENT.md](TRADING_AGENT.md) | Trading architecture, the risk checks, the security checklist and open risks |
 | [PLAN_AUTOMATION.md](PLAN_AUTOMATION.md) | The original plan for automations |
 | [PLAN_TRADING_AGENT.md](PLAN_TRADING_AGENT.md) | The original plan for trading agents |
-| [PLAN_TELEGRAM_AGENT.md](PLAN_TELEGRAM_AGENT.md) | The Telegram agent: design, tools, confirmations, background work |
+| [accred-telegram-agent](https://github.com/useAccred/accred-telegram-agent) | The Telegram agent: its own service, design in its docs/PLAN.md |
 | [../README.md](../README.md) | The short overview of the repository |
 
 Questions: [contact@accred.sh](mailto:contact@accred.sh). The privacy policy is at [agent.accred.sh/privacy](https://agent.accred.sh/privacy) and the terms are at [agent.accred.sh/terms](https://agent.accred.sh/terms).

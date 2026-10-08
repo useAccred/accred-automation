@@ -8,7 +8,7 @@ Connect your apps, describe a job in plain words, and an AI agent runs it for yo
 - **You choose the model, or the agent does.** Auto mode uses a strong model to decide and a cheap one to read.
 - **You stay in charge.** A credit budget per run, a cap per month, and approval before anything is sent or changed.
 - **Trading agents.** Give an agent a risk mandate on Robinhood Chain instead of access to your wallet.
-- **A Telegram agent.** Paste your API key in the Accred bot and do all of the above by chatting: ask anything, create jobs, control trading agents, get a daily brief. Every action waits for a button tap.
+- **A Telegram agent.** Paste your API key in @AccredAgentbot and do all of the above by chatting. It runs as its own service, [accred-telegram-agent](https://github.com/useAccred/accred-telegram-agent), on this app's engine and database.
 
 ## Contents
 
@@ -151,13 +151,15 @@ Agents trade **with real funds on Robinhood Chain mainnet** (chain ID 4663), buy
 
 ## The Telegram agent
 
-Open the shared Accred bot in Telegram, paste your Accred API key once (the message is deleted as soon as it is read), and talk to it:
+Open @AccredAgentbot in Telegram, paste your Accred API key once (the message is deleted as soon as it is read), and talk to it:
 
 - "What happened in AI today?" answers with the model you chose, paid from your credits with the exact cost recorded.
 - "Every morning at 8, send me the three most important crypto headlines." creates an automation with this chat as its Telegram connection.
 - "How are my agents doing?", "Pause Momentum A", "Close everything", "Set up a balanced agent with $200" read and control trading agents through the same code as the dashboard.
 
-Anything that sends, creates, pauses or trades is shown first with Confirm and Cancel buttons; creating a trading agent shows the full mandate and the button reads "Approve and start trading". Runs that stop at "Needs approval" on the web arrive in the chat with Approve and Decline buttons. On its own, the bot sends a daily brief at the hour you pick and a low-balance warning. It never withdraws funds, never touches keys, and never loosens a mandate; those stay on the web. Commands: `/status`, `/brief 8`, `/budget 5 100`, `/model`, `/memory`, `/new`, `/key`, `/stop`. Design and details: [docs/PLAN_TELEGRAM_AGENT.md](docs/PLAN_TELEGRAM_AGENT.md).
+Anything that sends, creates, pauses or trades is shown first with Confirm and Cancel buttons; creating a trading agent shows the full mandate and the button reads "Approve and start trading". Runs that stop at "Needs approval" on the web arrive in the chat with Approve and Decline buttons. On its own, the bot sends a daily brief at the hour you pick and a low-balance warning. It never withdraws funds, never touches keys, and never loosens a mandate; those stay on the web.
+
+The bot is its own service, [accred-telegram-agent](https://github.com/useAccred/accred-telegram-agent), built on this repository's `src/lib` (pulled in as a git submodule) and the same database. This app runs with `TELEGRAM_POLLING=off` and the same bot token, so the bot polls and both can send.
 
 ## Security
 
