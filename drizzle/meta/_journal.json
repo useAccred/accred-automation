@@ -50,6 +50,13 @@
       "when": 1791468695127,
       "tag": "0006_bot_watch",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791480538621,
+      "tag": "0007_bot_alerts_groups",
+      "breakpoints": true
     }
   ]
 }

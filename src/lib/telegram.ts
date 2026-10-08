@@ -63,10 +63,44 @@ export interface TelegramChat {
   first_name?: string;
 }
 
+export interface TelegramUser {
+  id: number;
+  is_bot?: boolean;
+  first_name?: string;
+  username?: string;
+  language_code?: string;
+}
+
+export interface TelegramFile {
+  file_id: string;
+  file_unique_id?: string;
+  file_size?: number;
+  mime_type?: string;
+  file_name?: string;
+  duration?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface TelegramMessage {
+  message_id?: number;
+  text?: string;
+  caption?: string;
+  chat: TelegramChat;
+  from?: TelegramUser;
+  date?: number;
+  entities?: Array<{ type: string; offset: number; length: number }>;
+  reply_to_message?: { message_id: number; from?: TelegramUser; text?: string };
+  voice?: TelegramFile;
+  audio?: TelegramFile;
+  photo?: TelegramFile[];
+  document?: TelegramFile;
+}
+
 export interface TelegramUpdate {
   update_id: number;
-  message?: { message_id?: number; text?: string; chat: TelegramChat };
-  callback_query?: { id: string; data?: string; message?: { message_id: number; chat: TelegramChat } };
+  message?: TelegramMessage;
+  callback_query?: { id: string; data?: string; from?: TelegramUser; message?: { message_id: number; chat: TelegramChat } };
 }
 
 function chatLabel(chat: TelegramChat): string {

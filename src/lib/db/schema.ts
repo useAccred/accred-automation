@@ -443,6 +443,9 @@ export const auditEvents = pgTable(
 // ── Telegram agent ──────────────────────────────────────────────────────────
 
 export type BotChatState = "awaiting_key" | "linked";
+export type BriefSection = "balance" | "spend" | "agents" | "automations" | "cred";
+export type BotWatchKind = "price_below" | "price_above" | "position_closed" | "run_failed" | "agent_paused";
+export type BotWatchStatus = "active" | "fired" | "off";
 
 /** One linked Telegram chat: the account it belongs to, its settings, memory and conversation. */
 export const botChats = pgTable(
@@ -471,6 +474,14 @@ export const botChats = pgTable(
     notifiedRunIds: jsonb("notified_run_ids").$type<string[]>().notNull().default([]),
     /** Last balances seen per trading wallet address, so a deposit can be announced once. */
     walletBalances: jsonb("wallet_balances").$type<Record<string, { usdg: number; eth: number; cred: number; at: number }>>().notNull().default({}),
+    /** "private" for a one-to-one chat; "group" when the bot was linked into a group by its owner. */
+    chatKind: text("chat_kind").$type<"private" | "group">().notNull().default("private"),
+    /** In a group: the Telegram user id of the member whose account the chat uses. Only they may confirm. */
+    ownerTelegramId: text("owner_telegram_id"),
+    /** Which parts the daily brief includes. */
+    briefSections: jsonb("brief_sections").$type<BriefSection[]>().notNull().default(["balance", "spend", "agents", "automations"]),
+    /** When the alert watcher last looked at this chat's events, so each event fires once. */
+    lastWatchAt: timestamp("last_watch_at", { withTimezone: true }),
     /** ISO week ("2026-W41") of the last weekly report. */
     lastWeeklyOn: text("last_weekly_on"),
     lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
@@ -520,6 +531,28 @@ export const botActions = pgTable(
     createdAt: createdAt(),
   },
   (table) => [index("bot_actions_chat_idx").on(table.chatId, table.status)],
+);
+
+/** An alert the user asked for in Telegram: a price threshold (fires once) or a standing event watch. */
+export const botWatches = pgTable(
+  "bot_watches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    chatId: text("chat_id").notNull().references(() => botChats.chatId, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<BotWatchKind>().notNull(),
+    /** Price watches: the token on Robinhood Chain. */
+    assetAddress: text("asset_address"),
+    assetSymbol: text("asset_symbol"),
+    thresholdUsd: doublePrecision("threshold_usd"),
+    /** Event watches may be limited to one trading agent. */
+    agentId: uuid("agent_id"),
+    status: text("status").$type<BotWatchStatus>().notNull().default("active"),
+    firedCount: integer("fired_count").notNull().default(0),
+    lastFiredAt: timestamp("last_fired_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [index("bot_watches_chat_idx").on(table.chatId, table.status)],
 );
 
 // ── Accred Bot (web) ────────────────────────────────────────────────────────
@@ -626,6 +659,7 @@ export type Execution = typeof executions.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type BotChat = typeof botChats.$inferSelect;
 export type BotAction = typeof botActions.$inferSelect;
+export type BotWatch = typeof botWatches.$inferSelect;
 export type WebBot = typeof webBots.$inferSelect;
 export type WebBotMessage = typeof webBotMessages.$inferSelect;
 export type WebBotAction = typeof webBotActions.$inferSelect;
