@@ -469,6 +469,10 @@ export const botChats = pgTable(
     transcript: jsonb("transcript").$type<Array<{ role: "user" | "assistant"; content: string }>>().notNull().default([]),
     /** Runs waiting for approval that this chat has been told about. */
     notifiedRunIds: jsonb("notified_run_ids").$type<string[]>().notNull().default([]),
+    /** Last balances seen per trading wallet address, so a deposit can be announced once. */
+    walletBalances: jsonb("wallet_balances").$type<Record<string, { usdg: number; eth: number; cred: number; at: number }>>().notNull().default({}),
+    /** ISO week ("2026-W41") of the last weekly report. */
+    lastWeeklyOn: text("last_weekly_on"),
     lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -518,6 +522,93 @@ export const botActions = pgTable(
   (table) => [index("bot_actions_chat_idx").on(table.chatId, table.status)],
 );
 
+// ── Accred Bot (web) ────────────────────────────────────────────────────────
+
+export type BotColor = "teal" | "orange" | "indigo" | "violet" | "blue" | "rose" | "lime" | "amber";
+export type BotShape = "round" | "drop" | "peak";
+
+/** One bot in the web workspace: a named teammate with a job, its own memory and conversation. */
+export const webBots = pgTable(
+  "web_bots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** What the bot is for, in the user's words. Becomes part of its system prompt. */
+    role: text("role").notNull().default(""),
+    color: text("color").$type<BotColor>().notNull().default("teal"),
+    shape: text("shape").$type<BotShape>().notNull().default("round"),
+    /** Preset this bot was made from, for the gallery. Null for a custom bot. */
+    preset: text("preset"),
+    modelMode: text("model_mode").$type<"auto" | "economy" | "quality" | "pinned">().notNull().default("auto"),
+    modelId: text("model_id"),
+    maxPerMessageMicro: micro("max_per_message_micro").notNull().default(sql`3000000`),
+    maxPerDayMicro: micro("max_per_day_micro").notNull().default(sql`50000000`),
+    /** The note the bot keeps about the user and the work. */
+    memory: text("memory").notNull().default(""),
+    /** Recent turns as model messages, the bot's working context. */
+    transcript: jsonb("transcript").$type<Array<{ role: "user" | "assistant"; content: string }>>().notNull().default([]),
+    /** Set while a reply is being produced, so every open tab shows the bot typing. */
+    busySince: timestamp("busy_since", { withTimezone: true }),
+    lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("web_bots_user_idx").on(table.userId, table.lastMessageAt)],
+);
+
+export type WebBotMessageRole = "user" | "bot" | "event";
+export type WebBotMessageKind = "text" | "tool" | "memory" | "action" | "error" | "budget";
+
+/** Everything shown in a bot's thread: the user's messages, the bot's replies and the events between them. */
+export const webBotMessages = pgTable(
+  "web_bot_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    botId: uuid("bot_id")
+      .notNull()
+      .references(() => webBots.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role").$type<WebBotMessageRole>().notNull(),
+    kind: text("kind").$type<WebBotMessageKind>().notNull().default("text"),
+    content: text("content").notNull(),
+    /** Tool name, status, action id, model and so on, depending on the kind. */
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+    creditsMicro: micro("credits_micro").notNull().default(sql`0`),
+    createdAt: createdAt(),
+  },
+  (table) => [index("web_bot_messages_bot_idx").on(table.botId, table.createdAt)],
+);
+
+export type WebBotActionStatus = "pending" | "confirmed" | "cancelled" | "expired";
+
+/** A write tool the bot asked for, waiting for the user's Confirm in the thread. */
+export const webBotActions = pgTable(
+  "web_bot_actions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    botId: uuid("bot_id")
+      .notNull()
+      .references(() => webBots.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tool: text("tool").notNull(),
+    args: jsonb("args").$type<Record<string, unknown>>().notNull().default({}),
+    title: text("title").notNull(),
+    status: text("status").$type<WebBotActionStatus>().notNull().default("pending"),
+    /** The thread message carrying the buttons. */
+    messageId: uuid("message_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("web_bot_actions_bot_idx").on(table.botId, table.status)],
+);
+
 export type User = typeof users.$inferSelect;
 export type Connection = typeof connections.$inferSelect;
 export type Automation = typeof automations.$inferSelect;
@@ -535,3 +626,6 @@ export type Execution = typeof executions.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type BotChat = typeof botChats.$inferSelect;
 export type BotAction = typeof botActions.$inferSelect;
+export type WebBot = typeof webBots.$inferSelect;
+export type WebBotMessage = typeof webBotMessages.$inferSelect;
+export type WebBotAction = typeof webBotActions.$inferSelect;
