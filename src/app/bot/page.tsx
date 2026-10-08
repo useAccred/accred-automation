@@ -201,16 +201,26 @@ export default function BotLandingPage() {
             </div>
             <div className="card flex flex-col justify-between rounded-3xl p-7 sm:p-8">
               <div>
-                <p className="eyebrow">Also in Telegram</p>
-                <p className="mt-4 text-[17px] font-medium">The same agent, in your pocket</p>
+                <p className="eyebrow">How a reply is priced</p>
+                <p className="mt-4 text-[17px] font-medium">Only what the models cost</p>
                 <p className="mt-2 text-[14px] leading-relaxed text-muted">
-                  @AccredAgentbot answers in Telegram with the same tools and the same confirmations. Link it from Connections and talk to it anywhere.
+                  A reply is one or more model calls: a strong model to think, a fast one to read long pages. You are charged their exact cost, nothing on top, and each reply shows its receipt.
                 </p>
               </div>
-              <a href="https://t.me/AccredAgentbot" className="btn btn-secondary mt-6 w-full">
-                Open in Telegram
-                <ArrowUpRight size={14} aria-hidden />
-              </a>
+              <ul className="mt-6 space-y-2 text-[14px] text-muted">
+                <li className="flex items-start gap-2.5">
+                  <span className="dot mt-[0.55rem] flex-none text-primary" />
+                  Budget per message and per day, set per bot
+                </li>
+                <li className="flex items-start gap-2.5">
+                  <span className="dot mt-[0.55rem] flex-none text-primary" />
+                  Economy mode for simple chores, Best quality when it matters
+                </li>
+                <li className="flex items-start gap-2.5">
+                  <span className="dot mt-[0.55rem] flex-none text-primary" />
+                  Nothing is charged while a bot waits for your Confirm
+                </li>
+              </ul>
             </div>
           </div>
         </div>

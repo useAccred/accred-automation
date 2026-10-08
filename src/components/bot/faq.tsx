@@ -25,8 +25,8 @@ const FAQ = [
     a: "No. The Trading Desk bot reports on your trading agents with exact numbers, but trades are decided by the risk engine inside an agent's mandate. Nothing in a thread can withdraw funds or accept a key.",
   },
   {
-    q: "Is there a Telegram version?",
-    a: "Yes. @AccredAgentbot is the same agent in Telegram, with the same tools and confirmations. Link it on the Connections page.",
+    q: "Is this the Telegram bot?",
+    a: "No. Accred Bot is its own product: a workspace of named bots on the web. The Telegram agent is a separate product with its own chat. You can use either or both.",
   },
 ];
 
