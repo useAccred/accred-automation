@@ -41,14 +41,14 @@
       "idx": 5,
       "version": "7",
       "when": 1791465660296,
-      "tag": "0005_bot_watch",
+      "tag": "0005_web_bots",
       "breakpoints": true
     },
     {
       "idx": 6,
       "version": "7",
       "when": 1791468695127,
-      "tag": "0006_little_mantis",
+      "tag": "0006_bot_watch",
       "breakpoints": true
     }
   ]
