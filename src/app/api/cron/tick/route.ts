@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { botHeartbeat } from "@/lib/bot/heartbeat";
 import { env } from "@/lib/env";
 import { tick } from "@/lib/scheduler";
 import { monitorTick, tradingTick } from "@/lib/trading/monitor";
@@ -15,6 +16,7 @@ async function handle(request: Request) {
   // The position monitor runs first, so protective exits never wait on new cycles.
   const monitor = await monitorTick();
   const [automations, trading] = await Promise.all([tick(), tradingTick()]);
+  await botHeartbeat().catch((error) => console.error("[cron] bot", error));
   return Response.json({ ...automations, trading: trading.started, positionsWatched: monitor.positions });
 }
 

@@ -440,6 +440,84 @@ export const auditEvents = pgTable(
   (table) => [index("audit_events_automation_idx").on(table.automationId, table.createdAt), index("audit_events_user_idx").on(table.userId, table.createdAt)],
 );
 
+// ── Telegram agent ──────────────────────────────────────────────────────────
+
+export type BotChatState = "awaiting_key" | "linked";
+
+/** One linked Telegram chat: the account it belongs to, its settings, memory and conversation. */
+export const botChats = pgTable(
+  "bot_chats",
+  {
+    /** Telegram chat id, as text: ids can exceed 2^53. */
+    chatId: text("chat_id").primaryKey(),
+    /** Null until a key has been accepted. */
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+    state: text("state").$type<BotChatState>().notNull().default("awaiting_key"),
+    timezone: text("timezone").notNull().default("UTC"),
+    /** Hour of the daily brief in the chat's timezone, 0 to 23. Null for no brief. */
+    briefHour: integer("brief_hour"),
+    lastBriefOn: text("last_brief_on"),
+    lowBalanceMicro: micro("low_balance_micro").notNull().default(sql`200000000`),
+    lowBalanceAlertedAt: timestamp("low_balance_alerted_at", { withTimezone: true }),
+    maxPerMessageMicro: micro("max_per_message_micro").notNull().default(sql`3000000`),
+    maxPerDayMicro: micro("max_per_day_micro").notNull().default(sql`50000000`),
+    modelMode: text("model_mode").$type<"auto" | "economy" | "quality" | "pinned">().notNull().default("auto"),
+    modelId: text("model_id"),
+    /** The note the agent keeps about the user. */
+    memory: text("memory").notNull().default(""),
+    /** Recent turns, as model messages. */
+    transcript: jsonb("transcript").$type<Array<{ role: "user" | "assistant"; content: string }>>().notNull().default([]),
+    /** Runs waiting for approval that this chat has been told about. */
+    notifiedRunIds: jsonb("notified_run_ids").$type<string[]>().notNull().default([]),
+    lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("bot_chats_user_idx").on(table.userId)],
+);
+
+/** One reply of the agent, with what it cost. */
+export const botTurns = pgTable(
+  "bot_turns",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    chatId: text("chat_id").notNull().references(() => botChats.chatId, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    model: text("model"),
+    creditsMicro: micro("credits_micro").notNull().default(sql`0`),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    toolCalls: integer("tool_calls").notNull().default(0),
+    outcome: text("outcome").$type<"answered" | "confirmation" | "budget" | "failed">().notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("bot_turns_chat_idx").on(table.chatId, table.createdAt)],
+);
+
+export type BotActionStatus = "pending" | "confirmed" | "cancelled" | "expired";
+
+/** A write action the model asked for, waiting for the user's button tap. */
+export const botActions = pgTable(
+  "bot_actions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    chatId: text("chat_id").notNull().references(() => botChats.chatId, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    /** "tool" runs a bot tool on confirmation; "run_approval" approves or declines an automation run. */
+    kind: text("kind").$type<"tool" | "run_approval">().notNull(),
+    tool: text("tool"),
+    args: jsonb("args").$type<Record<string, unknown>>().notNull().default({}),
+    runId: uuid("run_id"),
+    title: text("title").notNull(),
+    status: text("status").$type<BotActionStatus>().notNull().default("pending"),
+    /** The Telegram message carrying the buttons, so they can be removed. */
+    messageId: integer("message_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("bot_actions_chat_idx").on(table.chatId, table.status)],
+);
+
 export type User = typeof users.$inferSelect;
 export type Connection = typeof connections.$inferSelect;
 export type Automation = typeof automations.$inferSelect;
@@ -455,3 +533,5 @@ export type RiskEvaluation = typeof riskEvaluations.$inferSelect;
 export type Position = typeof positions.$inferSelect;
 export type Execution = typeof executions.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
+export type BotChat = typeof botChats.$inferSelect;
+export type BotAction = typeof botActions.$inferSelect;

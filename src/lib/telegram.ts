@@ -55,7 +55,7 @@ export async function createTelegramLink(userId: string): Promise<string> {
   return `https://t.me/${await getBotUsername()}?start=${await newLinkCode(userId, null)}`;
 }
 
-interface TelegramChat {
+export interface TelegramChat {
   id: number;
   type: string;
   title?: string;
@@ -65,7 +65,8 @@ interface TelegramChat {
 
 export interface TelegramUpdate {
   update_id: number;
-  message?: { text?: string; chat: TelegramChat };
+  message?: { message_id?: number; text?: string; chat: TelegramChat };
+  callback_query?: { id: string; data?: string; message?: { message_id: number; chat: TelegramChat } };
 }
 
 function chatLabel(chat: TelegramChat): string {
@@ -101,6 +102,25 @@ async function saveChat(userId: string, chat: TelegramChat, bot: string, botToke
   return "created";
 }
 
+/** Saves a chat as a connection through the shared bot, for the Telegram agent's onboarding. */
+export async function saveSharedChat(userId: string, chat: TelegramChat): Promise<"created" | "exists"> {
+  return saveChat(userId, chat, await getBotUsername());
+}
+
+/**
+ * Redeems a "/start <code>" link made on the Connections page: the chat becomes
+ * a connection of that user. Null when the code is unknown, used or expired.
+ */
+export async function consumeStartCode(code: string, chat: TelegramChat): Promise<{ userId: string; outcome: "created" | "exists" } | null> {
+  // Codes made for a user's own bot carry a token and are not valid here.
+  const [link] = await db
+    .delete(telegramLinks)
+    .where(and(eq(telegramLinks.code, code), gt(telegramLinks.expiresAt, new Date()), isNull(telegramLinks.botTokenEnc)))
+    .returning();
+  if (!link) return null;
+  return { userId: link.userId, outcome: await saveChat(link.userId, chat, await getBotUsername()) };
+}
+
 // ── Shared bot ──────────────────────────────────────────────────────────────
 
 async function reply(chatId: number, text: string): Promise<void> {
@@ -116,19 +136,14 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     return;
   }
 
-  // Codes made for a user's own bot carry a token and are not valid here.
-  const [link] = await db
-    .delete(telegramLinks)
-    .where(and(eq(telegramLinks.code, code), gt(telegramLinks.expiresAt, new Date()), isNull(telegramLinks.botTokenEnc)))
-    .returning();
-  if (!link) {
+  const result = await consumeStartCode(code, message.chat);
+  if (!result) {
     await reply(message.chat.id, "That link has expired or was already used. Press Connect again to get a new one.");
     return;
   }
-  const outcome = await saveChat(link.userId, message.chat, await getBotUsername());
   await reply(
     message.chat.id,
-    outcome === "exists"
+    result.outcome === "exists"
       ? "This chat is already connected to Accred Automation."
       : "Connected. Your automations can now send messages to this chat.",
   );
@@ -137,8 +152,12 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const globalForTelegram = globalThis as unknown as { __accredTelegramPolling?: boolean };
 
-/** Receives shared-bot messages by long polling, which works on any long-running server, including localhost. */
-export function startTelegramPolling(): void {
+/**
+ * Receives shared-bot updates by long polling, which works on any long-running
+ * server, including localhost. `onUpdate` handles each update; by default only
+ * Connect links are handled. The Telegram agent passes its own router.
+ */
+export function startTelegramPolling(onUpdate: (update: TelegramUpdate) => Promise<void> = handleTelegramUpdate): void {
   if (!sharedBotConfigured() || globalForTelegram.__accredTelegramPolling) return;
   globalForTelegram.__accredTelegramPolling = true;
   void (async () => {
@@ -148,10 +167,11 @@ export function startTelegramPolling(): void {
     let offset: number | undefined;
     for (;;) {
       try {
-        const updates = await call<TelegramUpdate[]>("getUpdates", { timeout: 25, offset, allowed_updates: ["message"] }, 40_000);
+        const updates = await call<TelegramUpdate[]>("getUpdates", { timeout: 25, offset, allowed_updates: ["message", "callback_query"] }, 40_000);
         for (const update of updates) {
           offset = update.update_id + 1;
-          await handleTelegramUpdate(update).catch((error) => console.error("[telegram]", error));
+          // Handlers queue their own work per chat, so the poll loop is never held up by a slow turn.
+          await onUpdate(update).catch((error) => console.error("[telegram]", error));
         }
       } catch (error) {
         const status = (error as { status?: number }).status;

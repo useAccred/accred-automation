@@ -9,5 +9,6 @@ export async function register() {
   const { startTradingMonitor } = await import("./lib/trading/monitor");
   startTradingMonitor();
   const { startTelegramPolling } = await import("./lib/telegram");
-  startTelegramPolling();
+  const { handleBotUpdate } = await import("./lib/bot/router");
+  startTelegramPolling(handleBotUpdate);
 }

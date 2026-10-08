@@ -2,6 +2,7 @@ import { and, eq, inArray, isNotNull, lt, lte } from "drizzle-orm";
 import { createRun, executeRun } from "./agent/runner";
 import { automations, db, runs } from "./db";
 import { nextRun } from "./schedule";
+import { botHeartbeat } from "./bot/heartbeat";
 import { tradingTick } from "./trading/monitor";
 
 const STALE_AFTER_MS = 15 * 60_000;
@@ -72,6 +73,7 @@ export function startInternalScheduler(intervalMs = 30_000): void {
   globalForScheduler.__accredScheduler = setInterval(() => {
     tick().catch((error) => console.error("[scheduler]", error));
     tradingTick().catch((error) => console.error("[scheduler] trading", error));
+    botHeartbeat().catch((error) => console.error("[scheduler] bot", error));
   }, intervalMs);
   globalForScheduler.__accredScheduler.unref();
 }

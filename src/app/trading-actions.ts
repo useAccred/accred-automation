@@ -17,10 +17,9 @@ import { env } from "@/lib/env";
 import { MandateSchema, canonicalMandate, profileOf, riskIncreases, type Mandate } from "@/lib/trading/mandate";
 import { INTERVALS, NUMERIC_KEYS, mandateLabel } from "@/lib/trading/mandate-fields";
 import { cleanSymbol, fetchSnapshots, type AssetOption } from "@/lib/trading/market-data";
-import { closePosition } from "@/lib/trading/monitor";
-import { notifyTrading } from "@/lib/trading/notify";
-import { PERMISSIONS, REQUIRED_WITH_EXECUTE, TRADING_AUTHORITY, isPermission, type Permission } from "@/lib/trading/permissions";
-import { loadAgent, loadPortfolio } from "@/lib/trading/store";
+import { closeAllPositions as closeAll, closeMany, pauseAgent, resumeAgent, revokeAccess } from "@/lib/trading/controls";
+import { PERMISSIONS, REQUIRED_WITH_EXECUTE, isPermission, type Permission } from "@/lib/trading/permissions";
+import { loadAgent } from "@/lib/trading/store";
 import { isStrategyKind } from "@/lib/trading/strategy";
 import { WalletError, createWallet, importWallet, removeWallet, setTradingAuthority, withdraw } from "@/lib/trading/wallets";
 
@@ -357,69 +356,21 @@ export async function saveTradingAgent(_previous: TradingFormState, form: FormDa
 }
 
 // ── Emergency controls ──────────────────────────────────────────────────────
+// The controls themselves live in src/lib/trading/controls.ts, shared with the Telegram agent.
 
 /** Pause stops new positions. The monitor keeps enforcing stops and targets on what is open. */
 export async function pauseTradingAgent(form: FormData): Promise<void> {
   const user = await requireUser();
   const agent = await ownAgent(user.id, text(form, "id"));
-  if (!agent) return;
-  const paused = await db
-    .update(tradingAutomations)
-    .set({ status: "paused", pausedBy: "user", pauseReason: "Paused by you.", nextRunAt: null, updatedAt: new Date() })
-    .where(and(eq(tradingAutomations.id, agent.automation.id), eq(tradingAutomations.status, "running")))
-    .returning({ id: tradingAutomations.id });
-  if (paused.length > 0) {
-    await audit({ userId: user.id, automationId: agent.automation.id, type: "agent.paused", actor: "user", summary: "Paused by the user. Protective monitoring continues." });
-    after(() => notifyTrading(agent.automation, "PAUSED by you\nNo new positions will be opened. Open positions keep their stop loss and take profit."));
-  }
+  if (agent) await pauseAgent(agent, "web");
   revalidatePath("/app/trading", "layout");
 }
 
 export async function resumeTradingAgent(form: FormData): Promise<void> {
   const user = await requireUser();
   const agent = await ownAgent(user.id, text(form, "id"));
-  // After a revoke, only a fresh review and approval (the edit form) starts the agent again.
-  if (!agent || agent.automation.status !== "paused" || agent.automation.accessRevokedAt || agent.wallet.tradingRevokedAt) {
-    revalidatePath("/app/trading", "layout");
-    return;
-  }
-  const portfolio = await loadPortfolio(db, agent.automation, agent.mandate, Date.now());
-  await db
-    .update(tradingAutomations)
-    .set({
-      status: "running",
-      pausedBy: null,
-      pauseReason: null,
-      // Resuming is a deliberate restart: the loss streak and the drawdown high-water mark start again from here.
-      breakerResetAt: new Date(),
-      peakEquityUsd: portfolio.equityUsd,
-      simulationFailures: 0,
-      dataFailures: 0,
-      nextRunAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(and(eq(tradingAutomations.id, agent.automation.id), eq(tradingAutomations.status, "paused")));
-  await audit({
-    userId: user.id,
-    automationId: agent.automation.id,
-    type: "agent.resumed",
-    actor: "user",
-    summary: `Resumed by the user${agent.automation.pausedBy === "breaker" ? " after an automatic pause" : ""}`,
-    data: { previousReason: agent.automation.pauseReason, equityUsd: portfolio.equityUsd },
-  });
+  if (agent) await resumeAgent(agent, env.liveTrading, "web");
   revalidatePath("/app/trading", "layout");
-}
-
-async function closeMany(ids: string[], reason: "manual_close" | "close_all") {
-  let closed = 0;
-  // Not closed: no current price, or the sale did not go through. Either way the position stays open under its stop.
-  let noPrice = 0;
-  for (const id of ids) {
-    const outcome = await closePosition(id, reason).catch(() => ({ status: "no_price" as const }));
-    if (outcome.status === "filled") closed++;
-    else if (outcome.status === "no_price" || outcome.status === "failed") noPrice++;
-  }
-  return { closed, noPrice };
 }
 
 /** Close all positions: pauses the agent first so nothing new opens, then sells every open position at the market price. */
@@ -427,30 +378,9 @@ export async function closeAllPositions(form: FormData): Promise<void> {
   const user = await requireUser();
   const agent = await ownAgent(user.id, text(form, "id"));
   if (!agent) return;
-  const { automation } = agent;
-  await db
-    .update(tradingAutomations)
-    .set({ status: "paused", pausedBy: "user", pauseReason: "Paused when you closed all positions.", nextRunAt: null, updatedAt: new Date() })
-    .where(and(eq(tradingAutomations.id, automation.id), eq(tradingAutomations.status, "running")));
-  const open = await db
-    .select({ id: positions.id })
-    .from(positions)
-    .where(and(eq(positions.automationId, automation.id), eq(positions.status, "open")));
-  const result = await closeMany(
-    open.map((position) => position.id),
-    "close_all",
-  );
-  await audit({
-    userId: user.id,
-    automationId: automation.id,
-    type: "agent.close_all",
-    actor: "user",
-    summary: `Close all positions: ${result.closed} closed${result.noPrice ? `, ${result.noPrice} could not be sold and stay open under their stops` : ""}. Agent paused.`,
-    data: result,
-  });
-  after(() => notifyTrading(automation, `CLOSE ALL by you\n${result.closed} position${result.closed === 1 ? "" : "s"} closed. The agent is paused.`));
+  const result = await closeAll(agent, "web");
   revalidatePath("/app/trading", "layout");
-  redirect(`/app/trading/${automation.id}${result.noPrice ? "?notice=no_price" : ""}`);
+  redirect(`/app/trading/${agent.automation.id}${result.noPrice ? "?notice=no_price" : ""}`);
 }
 
 export async function closeOnePosition(form: FormData): Promise<void> {
@@ -467,37 +397,10 @@ export async function closeOnePosition(form: FormData): Promise<void> {
   redirect(`/app/trading/${position.automationId}${result.noPrice ? "?notice=no_price" : ""}`);
 }
 
-/**
- * Revoke trading access: stops the agent and removes its permission to propose
- * or open trades. Open positions keep their protective exits. Starting again
- * takes a fresh review and approval.
- */
 export async function revokeTradingAccess(form: FormData): Promise<void> {
   const user = await requireUser();
   const agent = await ownAgent(user.id, text(form, "id"));
-  if (!agent) return;
-  const { automation } = agent;
-  await db
-    .update(tradingAutomations)
-    .set({
-      status: "stopped",
-      accessRevokedAt: new Date(),
-      pausedBy: "user",
-      pauseReason: "Trading access revoked by you.",
-      permissions: automation.permissions.filter((permission) => !TRADING_AUTHORITY.includes(permission)),
-      nextRunAt: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(tradingAutomations.id, automation.id));
-  await audit({
-    userId: user.id,
-    automationId: automation.id,
-    type: "agent.access_revoked",
-    actor: "user",
-    summary: "Trading access revoked. The agent can no longer propose or open trades.",
-    data: { removed: TRADING_AUTHORITY },
-  });
-  after(() => notifyTrading(automation, "TRADING ACCESS REVOKED by you\nThe agent can no longer propose or open trades. Open positions keep their stop loss and take profit."));
+  if (agent) await revokeAccess(agent, "web");
   revalidatePath("/app/trading", "layout");
 }
 
