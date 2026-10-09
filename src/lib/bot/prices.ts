@@ -85,15 +85,94 @@ async function gecko<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-/** Prices for CoinGecko ids, in dollars. Missing ids are left out. */
-export async function coinPrices(ids: string[]): Promise<Map<string, { priceUsd: number; change24hPercent: number | null; marketCapUsd: number | null; volume24hUsd: number | null }>> {
-  if (ids.length === 0) return new Map();
-  const body = await gecko<Record<string, { usd?: number; usd_24h_change?: number; usd_market_cap?: number; usd_24h_vol?: number }>>(
-    `/simple/price?ids=${encodeURIComponent([...new Set(ids)].join(","))}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`,
-  );
-  const out = new Map<string, { priceUsd: number; change24hPercent: number | null; marketCapUsd: number | null; volume24hUsd: number | null }>();
-  for (const [id, row] of Object.entries(body)) {
-    if (typeof row.usd === "number") out.set(id, { priceUsd: row.usd, change24hPercent: row.usd_24h_change ?? null, marketCapUsd: row.usd_market_cap ?? null, volume24hUsd: row.usd_24h_vol ?? null });
+const CACHE_MS = 60_000;
+const cache = new Map<string, { at: number; row: CoinRow }>();
+
+export interface CoinRow {
+  priceUsd: number;
+  change24hPercent: number | null;
+  marketCapUsd: number | null;
+  volume24hUsd: number | null;
+}
+
+const SYMBOL_BY_ID = new Map(Object.entries(COIN_IDS).map(([symbol, id]) => [id, symbol]));
+const fetchJson = async <T>(url: string): Promise<T> => {
+  const response = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(GECKO_TIMEOUT_MS) });
+  if (!response.ok) throw new PriceError(`${new URL(url).host} answered ${response.status}`);
+  return (await response.json()) as T;
+};
+
+/** Keyless exchange tickers, tried in turn. Any one of them is enough. */
+export async function exchangePrice(symbol: string): Promise<CoinRow | null> {
+  const pair = symbol.toUpperCase();
+  const stable = pair === "USDT" || pair === "USDC";
+  if (stable) return { priceUsd: 1, change24hPercent: 0, marketCapUsd: null, volume24hUsd: null };
+  const sources: Array<() => Promise<CoinRow>> = [
+    async () => {
+      const t = await fetchJson<{ lastPrice: string; priceChangePercent: string; quoteVolume: string }>(`https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}USDT`);
+      return { priceUsd: Number(t.lastPrice), change24hPercent: Number(t.priceChangePercent), marketCapUsd: null, volume24hUsd: Number(t.quoteVolume) };
+    },
+    async () => {
+      const t = await fetchJson<{ data: { amount: string } }>(`https://api.coinbase.com/v2/prices/${pair}-USD/spot`);
+      return { priceUsd: Number(t.data.amount), change24hPercent: null, marketCapUsd: null, volume24hUsd: null };
+    },
+    async () => {
+      const t = await fetchJson<{ result: Record<string, { c: [string, string]; p: [string, string]; v: [string, string]; o: string }> }>(`https://api.kraken.com/0/public/Ticker?pair=${pair}USD`);
+      const row = Object.values(t.result)[0];
+      if (!row) throw new PriceError("no pair");
+      const price = Number(row.c[0]);
+      const open = Number(row.o);
+      return { priceUsd: price, change24hPercent: open ? ((price - open) / open) * 100 : null, marketCapUsd: null, volume24hUsd: Number(row.v[1]) * price };
+    },
+  ];
+  for (const source of sources) {
+    try {
+      const row = await source();
+      if (Number.isFinite(row.priceUsd) && row.priceUsd > 0) return row;
+    } catch {
+      // Try the next exchange.
+    }
+  }
+  return null;
+}
+
+/**
+ * Prices for CoinGecko ids, in dollars. CoinGecko is asked once for the batch
+ * (it carries market cap); whatever it did not answer is filled from exchange
+ * tickers, which need no key. Everything is cached for a minute.
+ */
+export async function coinPrices(ids: string[]): Promise<Map<string, CoinRow>> {
+  const out = new Map<string, CoinRow>();
+  const now = Date.now();
+  const wanted = [...new Set(ids)].filter((id) => {
+    const hit = cache.get(id);
+    if (hit && now - hit.at < CACHE_MS) {
+      out.set(id, hit.row);
+      return false;
+    }
+    return true;
+  });
+  if (wanted.length === 0) return out;
+  try {
+    const body = await gecko<Record<string, { usd?: number; usd_24h_change?: number; usd_market_cap?: number; usd_24h_vol?: number }>>(
+      `/simple/price?ids=${encodeURIComponent(wanted.join(","))}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`,
+    );
+    for (const [id, row] of Object.entries(body)) {
+      if (typeof row.usd === "number") out.set(id, { priceUsd: row.usd, change24hPercent: row.usd_24h_change ?? null, marketCapUsd: row.usd_market_cap ?? null, volume24hUsd: row.usd_24h_vol ?? null });
+    }
+  } catch {
+    // Rate-limited or down: the exchanges below cover the common coins.
+  }
+  for (const id of wanted) {
+    if (out.has(id)) continue;
+    const symbol = SYMBOL_BY_ID.get(id);
+    if (!symbol) continue;
+    const row = await exchangePrice(symbol);
+    if (row) out.set(id, row);
+  }
+  for (const id of wanted) {
+    const row = out.get(id);
+    if (row) cache.set(id, { at: now, row });
   }
   return out;
 }
@@ -157,8 +236,11 @@ export async function quote(resolved: Resolved): Promise<PriceQuote> {
   }
   const prices = await coinPrices([resolved.coingeckoId!]);
   const row = prices.get(resolved.coingeckoId!);
-  if (!row) throw new PriceError(`No price for ${resolved.symbol} right now.`);
-  return { symbol: resolved.symbol, name: resolved.name, ...row, source: "coingecko", coingeckoId: resolved.coingeckoId };
+  if (row) return { symbol: resolved.symbol, name: resolved.name, ...row, source: "coingecko", coingeckoId: resolved.coingeckoId };
+  // ETH also trades on the chain as WETH; use that market before giving up.
+  const chain = CHAIN_TOKENS[resolved.symbol.toUpperCase()];
+  if (chain) return quote({ symbol: chain.symbol, name: chain.name, address: chain.address });
+  throw new PriceError(`Every price source is busy or rate-limiting right now; ${resolved.symbol} could not be read. Try again in a minute.`);
 }
 
 export function formatQuote(q: PriceQuote): string {
@@ -167,6 +249,6 @@ export function formatQuote(q: PriceQuote): string {
   if (q.change24hPercent !== null) parts.push(`${q.change24hPercent >= 0 ? "+" : ""}${q.change24hPercent.toFixed(2)}% 24h`);
   if (q.marketCapUsd) parts.push(`market cap $${Math.round(q.marketCapUsd).toLocaleString("en-US")}`);
   if (q.volume24hUsd) parts.push(`24h volume $${Math.round(q.volume24hUsd).toLocaleString("en-US")}`);
-  parts.push(q.source === "robinhood-chain" ? "on Robinhood Chain" : "via CoinGecko");
+  parts.push(q.source === "robinhood-chain" ? "on Robinhood Chain" : "spot");
   return parts.join(" · ");
 }
