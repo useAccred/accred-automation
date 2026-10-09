@@ -52,6 +52,16 @@ export default async function NewAutomationPage({ searchParams }: { searchParams
           </Link>
         }
       />
+      {!template && (
+        <Link href="/app/trading/new" className="card group mb-6 flex flex-wrap items-center justify-between gap-3 p-4 transition-colors hover:border-line-strong">
+          <span>
+            <span className="eyebrow">Trading agent</span>
+            <span className="mt-1.5 block text-sm font-medium">Let an agent trade on Robinhood Chain inside limits you set</span>
+            <span className="mt-1 block text-[13px] text-muted">A dedicated wallet, a capped allocation and a risk mandate the model cannot override. Starts in Paper Mode.</span>
+          </span>
+          <span className="btn btn-secondary">Set up a trading agent</span>
+        </Link>
+      )}
       <AutomationForm key={template?.id ?? "blank"} initial={initial} connections={connections} catalog={catalog} wantedKinds={template?.connections} />
     </>
   );

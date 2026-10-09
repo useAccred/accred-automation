@@ -5,7 +5,8 @@ import { formatCredits, microToExact, toMicro } from "../credits";
 import { describeCron, validateCron } from "../schedule";
 import { feedToText, htmlToText, truncateBytes } from "./extract";
 import { extractJsonObject, parseReply } from "./protocol";
-import { pickRouting, usableTextModels, worstCaseMicro } from "./router";
+import { modelBrand } from "../model-brand";
+import { displayName, featuredModels, pickRouting, usableTextModels, worstCaseMicro } from "./router";
 import { compact } from "./runner";
 import { isBlockedAddress, safeFetch } from "./safe-fetch";
 import { resolveApiUrl } from "./tools";
@@ -109,6 +110,43 @@ describe("routing", () => {
     const unknown = [model("vendor/big", "3", "12"), model("vendor/small", "0.2", "1.2"), model("vendor/huge", "8", "30")];
     expect(pickRouting(unknown, "auto")).toMatchObject({ planner: { id: "vendor/big" }, reader: { id: "vendor/small" } });
     expect(pickRouting(unknown, "quality").planner.id).toBe("vendor/huge");
+  });
+
+  it("features one flagship per entry, newest known version first", () => {
+    const listed = [
+      model("openai/gpt-6-astra", "10", "50", { name: "OpenAI: GPT-6 Astra" }),
+      model("gpt-6-astra", "10", "50"),
+      model("x-ai/grok-4.5", "2", "6"),
+      model("x-ai/grok-4.7", "2", "6"),
+      model("claude-haiku-4-5", "1", "5"),
+      model("vendor/unknown", "1", "1"),
+      model("openai/gpt-6-astra:batch", "5", "25"),
+    ];
+    expect(featuredModels(listed).map((entry) => entry.id)).toEqual(["claude-haiku-4-5", "gpt-6-astra", "x-ai/grok-4.7"]);
+    expect(featuredModels([model("vendor/unknown", "1", "1")])).toEqual([]);
+  });
+
+  it("names a model listed by its id after the same model listed under its maker", () => {
+    const listed = [
+      model("claude-haiku-4-5", "1", "5"),
+      model("anthropic/claude-haiku-4.5", "1", "5", { name: "Anthropic: Claude Haiku 4.5" }),
+      model("claude-sonnet-5", "2", "10"),
+      model("anthropic/claude-sonnet-5.5", "2", "10", { name: "Anthropic: Claude Sonnet 5.5" }),
+    ];
+    expect(displayName(listed[0]!, listed)).toBe("Claude Haiku 4.5");
+    expect(displayName(listed[1]!, listed)).toBe("Claude Haiku 4.5");
+    // A different version is a different model: no name is borrowed.
+    expect(displayName(listed[2]!, listed)).toBe("claude-sonnet-5");
+  });
+
+  it("finds the maker of a model for its logo", () => {
+    expect(modelBrand("claude-sonnet-5")).toEqual({ key: "anthropic", label: "Anthropic" });
+    expect(modelBrand("gpt-6-astra")?.key).toBe("openai");
+    expect(modelBrand("x-ai/grok-4.7")?.key).toBe("xai");
+    expect(modelBrand("meta-llama/llama-4-maverick")?.key).toBe("meta");
+    expect(modelBrand("google/gemini-3.8-flash")?.key).toBe("google");
+    expect(modelBrand("vendor/unknown")).toBeNull();
+    expect(modelBrand("")).toBeNull();
   });
 
   it("prices the worst case of a call", () => {

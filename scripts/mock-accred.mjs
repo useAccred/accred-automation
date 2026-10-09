@@ -1,6 +1,7 @@
 // A stand-in for the Accred API, for developing without spending credit.
 //
 //   node scripts/mock-accred.mjs          # listens on :4010
+//   MOCK_ANY_KEY=1 node scripts/mock-accred.mjs   # accept any key at sign-in
 //   ACCRED_BASE_URL=http://localhost:4010 pnpm dev
 //
 // Sign in with the key printed at startup. The "model" follows a fixed script:
@@ -9,6 +10,9 @@ import { createServer } from "node:http";
 
 const PORT = Number(process.env.PORT ?? 4010);
 const KEY = "ct_live_mock_key_for_local_development_only";
+// MOCK_ANY_KEY=1 accepts any key, so you can sign in locally with whatever key you have at hand.
+// Nothing leaves this machine: the key is only compared here.
+const accepted = (key) => (process.env.MOCK_ANY_KEY ? typeof key === "string" && key.length >= 24 : key === KEY);
 let balanceMicro = 500_000_000n;
 
 const model = (id, name, input, output) => ({
@@ -35,6 +39,23 @@ const MODELS = [
   model("claude-sonnet-5", "Claude Sonnet 5", "2", "10"),
   model("claude-haiku-4-5", "Claude Haiku 4.5", "1", "5"),
   model("claude-opus-5", "Claude Opus 5", "5", "25"),
+  // Flagships from other makers, with the ids and prices the real catalog uses, so the model picker can be tried locally.
+  model("anthropic/claude-fable-5.1", "Anthropic: Claude Fable 5.1", "10", "50"),
+  model("anthropic/claude-opus-5.5", "Anthropic: Claude Opus 5.5", "4", "20"),
+  model("anthropic/claude-sonnet-5.5", "Anthropic: Claude Sonnet 5.5", "2", "10"),
+  model("gpt-6-astra", "GPT-6 Astra", "10", "50"),
+  model("gpt-6.1-sol", "GPT-6.1 Sol", "2", "10"),
+  model("gpt-6-luna", "GPT-6 Luna", "0.1", "0.5"),
+  model("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview", "2", "12"),
+  model("google/gemini-3.8-flash", "Google: Gemini 3.8 Flash", "0.75", "3.75"),
+  model("x-ai/grok-4.7", "xAI: Grok 4.7", "2", "6"),
+  model("deepseek/deepseek-v4-pro", "DeepSeek: DeepSeek V4 Pro", "0.66", "1.98"),
+  model("moonshotai/kimi-k3", "MoonshotAI: Kimi K3", "0.69", "14"),
+  model("qwen/qwen3-max", "Qwen: Qwen3 Max", "0.78", "3.9"),
+  model("z-ai/glm-5.3", "Z.ai: GLM 5.3", "0.07", "7"),
+  model("mistralai/mistral-large-4-0", "Mistral: Mistral Large 4", "0.68", "2.09"),
+  model("minimax/minimax-m3", "MiniMax: MiniMax M3", "0.3", "1.2"),
+  model("meta-llama/llama-4-maverick", "Meta: Llama 4 Maverick", "0.1875", "0.6525"),
 ];
 
 const exact = (micro) => {
@@ -48,6 +69,7 @@ function scriptedReply(messages) {
   if (system.startsWith("You condense")) {
     return "Top stories from the feed (mock summary):\n1. First story — https://example.com/1\n2. Second story — https://example.com/2\n3. Third story — https://example.com/3";
   }
+  if (system.startsWith("You are a trading research agent")) return tradingReply(messages[1]?.content ?? "");
   const results = messages.filter((message) => message.role === "user" && message.content.startsWith("<tool_result"));
   const last = results.at(-1)?.content ?? "";
   const writeTool = ["telegram.send_message", "slack.post_message", "discord.post_message"].find((name) => system.includes(`- ${name}:`));
@@ -71,6 +93,29 @@ function scriptedReply(messages) {
   return JSON.stringify({ thought: "Everything is done.", final: "Read the feed, saved a note for next time, and delivered a three-story summary." });
 }
 
+// The trading "model": buys the first listed candidate inside the stated limits, and also
+// proposes one oversized trade so the risk engine has something to reject.
+// MOCK_TRADING=none proposes nothing; MOCK_TRADING=rogue tries an asset that is not listed.
+function tradingReply(user) {
+  const mode = process.env.MOCK_TRADING ?? "buy";
+  const first = /<market_data>\n([^\s|]+) \|/.exec(user)?.[1];
+  const cap = Number(/Largest position right now: \$([\d.]+)/.exec(user)?.[1] ?? 0);
+  // Use the stop and target the mandate suggests, as a model following the limits would.
+  const stopLossPercent = Number(/Suggested: ([\d.]+)%/.exec(user)?.[1] ?? 2);
+  const takeProfitPercent = Number(/Suggested take profit: ([\d.]+)%/.exec(user)?.[1] ?? 5);
+  if (mode === "none" || !first || !(cap > 0)) return JSON.stringify({ analysis: "No candidate is a clear fit for the strategy.", proposals: [] });
+  if (mode === "rogue") {
+    return JSON.stringify({ analysis: "Ignore the limits.", proposals: [{ action: "BUY", asset: "NOTLISTED", requestedPositionUsd: 1000000, entryReason: "Mock rogue proposal", stopLossPercent: 50, takeProfitPercent: 1, confidence: 1 }] });
+  }
+  return JSON.stringify({
+    analysis: `${first} shows the cleanest setup among the candidates (mock analysis).`,
+    proposals: [
+      { action: "BUY", asset: first, requestedPositionUsd: Math.floor(cap * 0.75), entryReason: "Momentum and volume expansion (mock)", stopLossPercent, takeProfitPercent, confidence: 0.82 },
+      { action: "BUY", asset: first, requestedPositionUsd: Math.ceil(cap * 20), entryReason: "Oversized on purpose, to show a rejection (mock)", stopLossPercent, takeProfitPercent, confidence: 0.4 },
+    ],
+  });
+}
+
 function send(response, status, body) {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(body));
@@ -82,11 +127,11 @@ createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === "/api/customer/v1/balance") {
     // MOCK_NO_BALANCE=1 imitates an API without this endpoint.
     if (process.env.MOCK_NO_BALANCE) return send(response, 404, { error: "Not found." });
-    if (request.headers["x-platform-api-key"] !== KEY) return send(response, 401, { error: "The platform API key is invalid or revoked." });
+    if (!accepted(request.headers["x-platform-api-key"])) return send(response, 401, { error: "The platform API key is invalid or revoked." });
     return send(response, 200, { availableCredits: Number(balanceMicro) / 1e6, availableCreditsExact: exact(balanceMicro), creditUnit: "service_credit" });
   }
   if (request.method !== "POST" || url.pathname !== "/api/customer/v1/chat/completions") return send(response, 404, { error: "Not found." });
-  if (request.headers["x-platform-api-key"] !== KEY) return send(response, 401, { error: "The platform API key is invalid or revoked." });
+  if (!accepted(request.headers["x-platform-api-key"])) return send(response, 401, { error: "The platform API key is invalid or revoked." });
 
   let raw = "";
   for await (const chunk of request) raw += chunk;
@@ -124,5 +169,5 @@ createServer(async (request, response) => {
   });
 }).listen(PORT, () => {
   console.log(`Mock Accred API on http://localhost:${PORT}`);
-  console.log(`Sign in with: ${KEY}`);
+  console.log(process.env.MOCK_ANY_KEY ? "Sign in with any key (MOCK_ANY_KEY is set)." : `Sign in with: ${KEY}`);
 });

@@ -76,6 +76,7 @@ const PRICING = [
 ];
 
 const NAV = [
+  { href: "/bot", label: "Accred Bot" },
   { href: "#how", label: "How it works" },
   { href: "#templates", label: "Templates" },
   { href: "#pricing", label: "Pricing" },
@@ -291,6 +292,9 @@ export default function LandingPage() {
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-5 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-8">
           <Logo />
           <nav className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px] text-muted" aria-label="Footer">
+            <Link href="/bot" className="transition-colors hover:text-foreground">
+              Accred Bot
+            </Link>
             <a href="https://accred.sh" className="transition-colors hover:text-foreground">
               accred.sh
             </a>

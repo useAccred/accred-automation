@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { listModels } from "./accred";
-import { pickRouting, suggestedModels, usableTextModels, worstCaseMicro, type ModelMode } from "./agent/router";
+import { displayName, featuredModels, pickRouting, suggestedModels, usableTextModels, worstCaseMicro, type ModelMode } from "./agent/router";
 import { formatCredits } from "./credits";
 import { automations, connections, db, runs } from "./db";
 
@@ -55,9 +55,11 @@ export interface ModelOption {
 export interface FormCatalog {
   models: ModelOption[];
   /** Which models each mode would use right now, and a worst-case cost for one step. */
-  preview: Partial<Record<Exclude<ModelMode, "pinned">, { planner: string; reader: string; stepCredits: string }>>;
+  preview: Partial<Record<Exclude<ModelMode, "pinned">, { planner: string; plannerId: string; reader: string; stepCredits: string }>>;
   /** One-click picks when choosing models by hand. */
   suggested: Array<{ id: string; name: string; note: string }>;
+  /** Flagship models from the best-known makers, with names fit to show. */
+  featured: ModelOption[];
   error?: string;
 }
 
@@ -75,8 +77,9 @@ export async function formCatalog(): Promise<FormCatalog> {
     for (const mode of ["auto", "economy", "quality"] as const) {
       const routing = pickRouting(catalog, mode);
       preview[mode] = {
-        planner: routing.planner.name,
-        reader: routing.reader.name,
+        planner: displayName(routing.planner, catalog),
+        plannerId: routing.planner.id,
+        reader: displayName(routing.reader, catalog),
         stepCredits: formatCredits(worstCaseMicro(routing.planner, TYPICAL_CONTEXT_CHARS, STEP_MAX_OUTPUT)),
       };
     }
@@ -86,8 +89,14 @@ export async function formCatalog(): Promise<FormCatalog> {
       { id: tiers.top.id, name: tiers.top.name, note: "strongest" },
       { id: tiers.fast.id, name: tiers.fast.name, note: "fast and cheap" },
     ].filter((entry, index, all) => all.findIndex((other) => other.id === entry.id) === index);
-    return { models, preview, suggested };
+    const featured = featuredModels(catalog).map((model) => ({
+      id: model.id,
+      name: displayName(model, catalog),
+      input: model.inputCostUsdPerMillion!,
+      output: model.outputCostUsdPerMillion!,
+    }));
+    return { models, preview, suggested, featured };
   } catch {
-    return { models: [], preview: {}, suggested: [], error: "The Accred model catalog could not be loaded. You can still save with Auto mode." };
+    return { models: [], preview: {}, suggested: [], featured: [], error: "The Accred model catalog could not be loaded. You can still save with Auto mode." };
   }
 }

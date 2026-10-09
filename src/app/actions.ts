@@ -15,8 +15,9 @@ import { revokeGoogleToken } from "@/lib/connections/gmail";
 import { CONNECTION_KINDS, isConnectionKind } from "@/lib/connections/kinds";
 import { MICRO, toMicro } from "@/lib/credits";
 import { decrypt, encrypt, randomToken, sha256 } from "@/lib/crypto";
-import { automations, connections, db, runs, users } from "@/lib/db";
+import { automations, connections, db, runs, tradingWallets, users } from "@/lib/db";
 import { isValidTimezone, nextRun, validateCron } from "@/lib/schedule";
+import { holdsFunds } from "@/lib/trading/wallets";
 import {
   OwnBotError,
   checkOwnBotLink,
@@ -83,6 +84,10 @@ export async function replaceKey(_previous: FormState, form: FormData): Promise<
 
 export async function deleteAccount(): Promise<void> {
   const user = await requireUser();
+  // Deleting the account destroys its trading-wallet keys, so it waits until those wallets are empty.
+  const wallets = await db.select({ address: tradingWallets.address }).from(tradingWallets).where(eq(tradingWallets.userId, user.id));
+  const funded = await Promise.all(wallets.map((wallet) => holdsFunds(wallet.address)));
+  if (funded.some(Boolean)) redirect("/app/settings?blocked=wallets");
   await destroySession();
   await db.delete(users).where(eq(users.id, user.id));
   redirect("/");

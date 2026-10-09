@@ -1,5 +1,10 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, doublePrecision, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import type { Mandate } from "../trading/mandate";
+import type { TradeState } from "../trading/states";
+import type { RiskCheck } from "../trading/risk-engine";
+import type { StrategyKind } from "../trading/strategy";
+import type { Permission } from "../trading/permissions";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 // Credit amounts are stored as integer microcredits (1 credit = 1,000,000), matching the Accred ledger.
@@ -147,8 +152,544 @@ export const runSteps = pgTable(
   (table) => [index("run_steps_run_idx").on(table.runId, table.idx)],
 );
 
+// ── Trading agents ──────────────────────────────────────────────────────────
+// Dollar amounts and token quantities are double precision: paper accounting, rounded when shown.
+
+const at = (name: string) => timestamp(name, { withTimezone: true });
+const usd = (name: string) => doublePrecision(name);
+
+/**
+ * A dedicated trading wallet on Robinhood Chain. The key is encrypted with the
+ * wallet key (see crypto.ts), separate from the key that protects API keys, and
+ * is only ever read by the wallet service for a withdrawal the user asked for.
+ */
+export const tradingWallets = pgTable(
+  "trading_wallets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** Lowercase 0x address. */
+    address: text("address").notNull(),
+    keyEnc: text("key_enc").notNull(),
+    source: text("source").$type<"created" | "imported">().notNull(),
+    /** Set when the user revokes trading authority: no agent may use this wallet until it is restored. */
+    tradingRevokedAt: at("trading_revoked_at"),
+    createdAt: createdAt(),
+  },
+  (table) => [index("trading_wallets_user_idx").on(table.userId), uniqueIndex("trading_wallets_user_address").on(table.userId, table.address)],
+);
+
+export type TradingStatus = "running" | "paused" | "stopped";
+
+export const tradingAutomations = pgTable(
+  "trading_automations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    // No cascade: a wallet in use cannot be removed. Checked at the end of the statement, so deleting the account still works.
+    walletId: uuid("wallet_id").notNull().references(() => tradingWallets.id),
+    name: text("name").notNull(),
+    mode: text("mode").$type<"paper" | "live">().notNull().default("paper"),
+    /** "paused" stops new positions while protective monitoring continues. "stopped" has never been approved, or access was revoked. */
+    status: text("status").$type<TradingStatus>().notNull().default("stopped"),
+    pausedBy: text("paused_by").$type<"user" | "breaker">(),
+    pauseReason: text("pause_reason"),
+    accessRevokedAt: at("access_revoked_at"),
+    /** Bumped on every configuration change, so the audit log can name the exact configuration. */
+    configVersion: integer("config_version").notNull().default(1),
+    mandateVersion: integer("mandate_version").notNull().default(1),
+    strategyVersion: integer("strategy_version").notNull().default(1),
+    permissions: jsonb("permissions").$type<Permission[]>().notNull().default([]),
+    modelMode: text("model_mode").$type<"auto" | "economy" | "quality" | "pinned">().notNull().default("auto"),
+    modelId: text("model_id"),
+    maxPerRunMicro: micro("max_per_run_micro").notNull(),
+    maxPerMonthMicro: micro("max_per_month_micro").notNull(),
+    intervalMinutes: integer("interval_minutes").notNull().default(15),
+    timezone: text("timezone").notNull().default("UTC"),
+    connectionIds: jsonb("connection_ids").$type<string[]>().notNull().default([]),
+    /** Highest equity seen, for drawdown. Maintained by the position monitor, not the model. */
+    peakEquityUsd: usd("peak_equity_usd"),
+    maxDrawdownPercent: usd("max_drawdown_percent").notNull().default(0),
+    /** Health counters behind the circuit breakers. */
+    simulationFailures: integer("simulation_failures").notNull().default(0),
+    dataFailures: integer("data_failures").notNull().default(0),
+    /** Set when the user resumes after a breaker: earlier losses stop counting toward the loss streak. */
+    breakerResetAt: at("breaker_reset_at"),
+    approvedAt: at("approved_at"),
+    nextRunAt: at("next_run_at"),
+    lastRunAt: at("last_run_at"),
+    createdAt: createdAt(),
+    updatedAt: at("updated_at").notNull().defaultNow(),
+  },
+  (table) => [index("trading_automations_user_idx").on(table.userId), index("trading_automations_due_idx").on(table.nextRunAt)],
+);
+
+/** Every version of an agent's mandate. Rows are never changed; an edit adds a version. */
+export const riskMandates = pgTable(
+  "risk_mandates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    automationId: uuid("automation_id").notNull().references(() => tradingAutomations.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    profile: text("profile").$type<"conservative" | "balanced" | "aggressive" | "custom">().notNull(),
+    mandate: jsonb("mandate").$type<Mandate>().notNull(),
+    /** Fields this version loosened compared with the one before, which the user confirmed. */
+    riskIncreases: jsonb("risk_increases").$type<string[]>().notNull().default([]),
+    approvedAt: at("approved_at").notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (table) => [uniqueIndex("risk_mandates_version").on(table.automationId, table.version)],
+);
+
+export const tradingStrategies = pgTable(
+  "trading_strategies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    automationId: uuid("automation_id").notNull().references(() => tradingAutomations.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    kinds: jsonb("kinds").$type<StrategyKind[]>().notNull(),
+    instructions: text("instructions").notNull().default(""),
+    createdAt: createdAt(),
+  },
+  (table) => [uniqueIndex("trading_strategies_version").on(table.automationId, table.version)],
+);
+
+export type TradingRunStatus = "running" | "completed" | "skipped" | "failed";
+
+/** One cycle of the agent: scan, filter, ask the model, check, execute. */
+export const tradingRuns = pgTable(
+  "trading_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    automationId: uuid("automation_id").notNull().references(() => tradingAutomations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    status: text("status").$type<TradingRunStatus>().notNull().default("running"),
+    trigger: text("trigger").$type<"schedule" | "manual">().notNull(),
+    mode: text("mode").$type<"paper" | "live">().notNull(),
+    model: text("model"),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    creditsMicro: micro("credits_micro").notNull().default(sql`0`),
+    budgetMicro: micro("budget_micro").notNull().default(sql`0`),
+    scanned: integer("scanned").notNull().default(0),
+    candidates: integer("candidates").notNull().default(0),
+    proposals: integer("proposals").notNull().default(0),
+    executed: integer("executed").notNull().default(0),
+    summary: text("summary"),
+    error: text("error"),
+    mandateVersion: integer("mandate_version").notNull(),
+    strategyVersion: integer("strategy_version").notNull(),
+    createdAt: createdAt(),
+    finishedAt: at("finished_at"),
+  },
+  (table) => [index("trading_runs_automation_idx").on(table.automationId, table.createdAt)],
+);
+
+export const tradeProposals = pgTable(
+  "trade_proposals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    automationId: uuid("automation_id").notNull().references(() => tradingAutomations.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").notNull().references(() => tradingRuns.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    state: text("state").$type<TradeState>().notNull(),
+    action: text("action").$type<"BUY">().notNull(),
+    /** Empty when the model named an asset that is not on the allowlist. */
+    assetAddress: text("asset_address").notNull(),
+    assetSymbol: text("asset_symbol").notNull(),
+    requestedUsd: usd("requested_usd").notNull(),
+    stopLossPercent: usd("stop_loss_percent"),
+    takeProfitPercent: usd("take_profit_percent"),
+    confidence: usd("confidence"),
+    reason: text("reason").notNull().default(""),
+    model: text("model"),
+    /** The market data the decision was made on. */
+    market: jsonb("market").$type<Record<string, unknown>>(),
+    /** Why it stopped, in words, when it did not become a position. */
+    outcome: text("outcome"),
+    mandateId: uuid("mandate_id").notNull().references(() => riskMandates.id),
+    mandateVersion: integer("mandate_version").notNull(),
+    strategyVersion: integer("strategy_version").notNull(),
+    createdAt: createdAt(),
+    updatedAt: at("updated_at").notNull().defaultNow(),
+  },
+  (table) => [index("trade_proposals_automation_idx").on(table.automationId, table.createdAt), index("trade_proposals_state_idx").on(table.state)],
+);
+
+export const riskEvaluations = pgTable(
+  "risk_evaluations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    proposalId: uuid("proposal_id").notNull().references(() => tradeProposals.id, { onDelete: "cascade" }),
+    automationId: uuid("automation_id").notNull().references(() => tradingAutomations.id, { onDelete: "cascade" }),
+    /** "pre_trade" runs before a quote exists; "final" runs with a fresh quote, immediately before execution. */
+    stage: text("stage").$type<"pre_trade" | "final">().notNull(),
+    approved: boolean("approved").notNull(),
+    passed: integer("passed").notNull(),
+    total: integer("total").notNull(),
+    checks: jsonb("checks").$type<RiskCheck[]>().notNull(),
+    /** Everything the engine was given, so a decision can be replayed. */
+    inputs: jsonb("inputs").$type<Record<string, unknown>>().notNull(),
+    mandateId: uuid("mandate_id").notNull().references(() => riskMandates.id),
+    mandateVersion: integer("mandate_version").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("risk_evaluations_proposal_idx").on(table.proposalId), index("risk_evaluations_automation_idx").on(table.automationId, table.createdAt)],
+);
+
+export type ExitReason = "stop_loss" | "take_profit" | "trailing_stop" | "partial_take_profit" | "timeout" | "agent_close" | "manual_close" | "close_all";
+
+export const positions = pgTable(
+  "positions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    automationId: uuid("automation_id").notNull().references(() => tradingAutomations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    proposalId: uuid("proposal_id").notNull().references(() => tradeProposals.id, { onDelete: "cascade" }),
+    mode: text("mode").$type<"paper" | "live">().notNull(),
+    assetAddress: text("asset_address").notNull(),
+    symbol: text("symbol").notNull(),
+    status: text("status").$type<"open" | "closed">().notNull().default("open"),
+    /** What is still held. */
+    quantity: usd("quantity").notNull(),
+    /** Live positions: what is still held in the token's smallest unit, exactly as the chain reported it. */
+    quantityRaw: text("quantity_raw"),
+    tokenDecimals: integer("token_decimals"),
+    initialQuantity: usd("initial_quantity").notNull(),
+    entryPriceUsd: usd("entry_price_usd").notNull(),
+    stopLossPrice: usd("stop_loss_price").notNull(),
+    initialStopLossPrice: usd("initial_stop_loss_price").notNull(),
+    takeProfitPrice: usd("take_profit_price"),
+    highestPriceUsd: usd("highest_price_usd").notNull(),
+    lastPriceUsd: usd("last_price_usd").notNull(),
+    lastPriceAt: at("last_price_at").notNull(),
+    breakEvenMoved: boolean("break_even_moved").notNull().default(false),
+    partialTaken: boolean("partial_taken").notNull().default(false),
+    /** Price gains and losses on what has been sold, before fees. */
+    realizedPnlUsd: usd("realized_pnl_usd").notNull().default(0),
+    /** Swap and network fees on the entry and every exit. */
+    feesUsd: usd("fees_usd").notNull().default(0),
+    /** The mandate version that approved the entry; its exit rules govern this position for life. */
+    mandateId: uuid("mandate_id").notNull().references(() => riskMandates.id),
+    mandateVersion: integer("mandate_version").notNull(),
+    openedAt: at("opened_at").notNull().defaultNow(),
+    expiresAt: at("expires_at"),
+    closedAt: at("closed_at"),
+    closeReason: text("close_reason").$type<ExitReason>(),
+  },
+  (table) => [index("positions_automation_idx").on(table.automationId, table.status), index("positions_open_idx").on(table.status)],
+);
+
+export const executions = pgTable(
+  "executions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    automationId: uuid("automation_id").notNull().references(() => tradingAutomations.id, { onDelete: "cascade" }),
+    proposalId: uuid("proposal_id").references(() => tradeProposals.id, { onDelete: "cascade" }),
+    positionId: uuid("position_id").references(() => positions.id, { onDelete: "cascade" }),
+    /** One per intended fill. The unique index is what makes a repeated attempt a no-op. */
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+    mode: text("mode").$type<"paper" | "live">().notNull(),
+    side: text("side").$type<"buy" | "sell">().notNull(),
+    reason: text("reason").$type<"entry" | ExitReason>().notNull(),
+    /** "pending" is a live fill that has been reserved, and possibly sent, but not yet confirmed on the chain. */
+    status: text("status").$type<"pending" | "filled" | "failed">().notNull(),
+    assetAddress: text("asset_address").notNull(),
+    symbol: text("symbol").notNull(),
+    quantity: usd("quantity").notNull(),
+    /** Live fills: the token amount in its smallest unit, from the transaction's own logs. */
+    quantityRaw: text("quantity_raw"),
+    priceUsd: usd("price_usd").notNull(),
+    notionalUsd: usd("notional_usd").notNull(),
+    swapFeeUsd: usd("swap_fee_usd").notNull().default(0),
+    networkFeeUsd: usd("network_fee_usd").notNull().default(0),
+    slippagePercent: usd("slippage_percent").notNull().default(0),
+    /** Sells only: gain or loss on the quantity sold, before fees. */
+    realizedPnlUsd: usd("realized_pnl_usd").notNull().default(0),
+    quote: jsonb("quote").$type<Record<string, unknown>>(),
+    /** Null in paper mode: nothing is signed or sent. Live: saved before the transaction is broadcast. */
+    txHash: text("tx_hash"),
+    approveTxHash: text("approve_tx_hash"),
+    /** Why a live fill failed, in words. */
+    error: text("error"),
+    mandateId: uuid("mandate_id").notNull().references(() => riskMandates.id),
+    mandateVersion: integer("mandate_version").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("executions_automation_idx").on(table.automationId, table.createdAt), index("executions_position_idx").on(table.positionId)],
+);
+
+/** Append-only history of everything that happened to an agent or wallet. Never holds keys or secrets. */
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    automationId: uuid("automation_id").references(() => tradingAutomations.id, { onDelete: "cascade" }),
+    walletId: uuid("wallet_id"),
+    runId: uuid("run_id"),
+    proposalId: uuid("proposal_id"),
+    positionId: uuid("position_id"),
+    type: text("type").notNull(),
+    actor: text("actor").$type<"user" | "agent" | "risk_engine" | "execution" | "monitor" | "system">().notNull(),
+    summary: text("summary").notNull(),
+    data: jsonb("data").$type<Record<string, unknown>>(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("audit_events_automation_idx").on(table.automationId, table.createdAt), index("audit_events_user_idx").on(table.userId, table.createdAt)],
+);
+
+// ── Telegram agent ──────────────────────────────────────────────────────────
+
+export type BotChatState = "awaiting_key" | "linked";
+export type BriefSection = "balance" | "spend" | "agents" | "automations" | "cred";
+export type BotWatchKind = "price_below" | "price_above" | "position_closed" | "run_failed" | "agent_paused";
+export type BotWatchStatus = "active" | "fired" | "off";
+
+/** One linked Telegram chat: the account it belongs to, its settings, memory and conversation. */
+export const botChats = pgTable(
+  "bot_chats",
+  {
+    /** Telegram chat id, as text: ids can exceed 2^53. */
+    chatId: text("chat_id").primaryKey(),
+    /** Null until a key has been accepted. */
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+    state: text("state").$type<BotChatState>().notNull().default("awaiting_key"),
+    timezone: text("timezone").notNull().default("UTC"),
+    /** Hour of the daily brief in the chat's timezone, 0 to 23. Null for no brief. */
+    briefHour: integer("brief_hour"),
+    lastBriefOn: text("last_brief_on"),
+    lowBalanceMicro: micro("low_balance_micro").notNull().default(sql`200000000`),
+    lowBalanceAlertedAt: timestamp("low_balance_alerted_at", { withTimezone: true }),
+    maxPerMessageMicro: micro("max_per_message_micro").notNull().default(sql`3000000`),
+    maxPerDayMicro: micro("max_per_day_micro").notNull().default(sql`50000000`),
+    modelMode: text("model_mode").$type<"auto" | "economy" | "quality" | "pinned">().notNull().default("auto"),
+    modelId: text("model_id"),
+    /** The note the agent keeps about the user. */
+    memory: text("memory").notNull().default(""),
+    /** Recent turns, as model messages. */
+    transcript: jsonb("transcript").$type<Array<{ role: "user" | "assistant"; content: string }>>().notNull().default([]),
+    /** Runs waiting for approval that this chat has been told about. */
+    notifiedRunIds: jsonb("notified_run_ids").$type<string[]>().notNull().default([]),
+    /** Last balances seen per trading wallet address, so a deposit can be announced once. */
+    walletBalances: jsonb("wallet_balances").$type<Record<string, { usdg: number; eth: number; cred: number; at: number }>>().notNull().default({}),
+    /** "private" for a one-to-one chat; "group" when the bot was linked into a group by its owner. */
+    chatKind: text("chat_kind").$type<"private" | "group">().notNull().default("private"),
+    /** In a group: the Telegram user id of the member whose account the chat uses. Only they may confirm. */
+    ownerTelegramId: text("owner_telegram_id"),
+    /** Which parts the daily brief includes. */
+    briefSections: jsonb("brief_sections").$type<BriefSection[]>().notNull().default(["balance", "spend", "agents", "automations"]),
+    /** When the alert watcher last looked at this chat's events, so each event fires once. */
+    lastWatchAt: timestamp("last_watch_at", { withTimezone: true }),
+    /** ISO week ("2026-W41") of the last weekly report. */
+    lastWeeklyOn: text("last_weekly_on"),
+    lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("bot_chats_user_idx").on(table.userId)],
+);
+
+/** One reply of the agent, with what it cost. */
+export const botTurns = pgTable(
+  "bot_turns",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    chatId: text("chat_id").notNull().references(() => botChats.chatId, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    model: text("model"),
+    creditsMicro: micro("credits_micro").notNull().default(sql`0`),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    toolCalls: integer("tool_calls").notNull().default(0),
+    outcome: text("outcome").$type<"answered" | "confirmation" | "budget" | "failed">().notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("bot_turns_chat_idx").on(table.chatId, table.createdAt)],
+);
+
+export type BotActionStatus = "pending" | "confirmed" | "cancelled" | "expired";
+
+/** A write action the model asked for, waiting for the user's button tap. */
+export const botActions = pgTable(
+  "bot_actions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    chatId: text("chat_id").notNull().references(() => botChats.chatId, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    /** "tool" runs a bot tool on confirmation; "run_approval" approves or declines an automation run. */
+    kind: text("kind").$type<"tool" | "run_approval">().notNull(),
+    tool: text("tool"),
+    args: jsonb("args").$type<Record<string, unknown>>().notNull().default({}),
+    runId: uuid("run_id"),
+    title: text("title").notNull(),
+    status: text("status").$type<BotActionStatus>().notNull().default("pending"),
+    /** The Telegram message carrying the buttons, so they can be removed. */
+    messageId: integer("message_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("bot_actions_chat_idx").on(table.chatId, table.status)],
+);
+
+/** An alert the user asked for in Telegram: a price threshold (fires once) or a standing event watch. */
+export const botWatches = pgTable(
+  "bot_watches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    chatId: text("chat_id").notNull().references(() => botChats.chatId, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<BotWatchKind>().notNull(),
+    /** Price watches: the token on Robinhood Chain. */
+    assetAddress: text("asset_address"),
+    assetSymbol: text("asset_symbol"),
+    thresholdUsd: doublePrecision("threshold_usd"),
+    /** Event watches may be limited to one trading agent. */
+    agentId: uuid("agent_id"),
+    status: text("status").$type<BotWatchStatus>().notNull().default("active"),
+    firedCount: integer("fired_count").notNull().default(0),
+    lastFiredAt: timestamp("last_fired_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [index("bot_watches_chat_idx").on(table.chatId, table.status)],
+);
+
+// ── Accred Bot (web) ────────────────────────────────────────────────────────
+
+export type BotColor = "teal" | "orange" | "indigo" | "violet" | "blue" | "rose" | "lime" | "amber";
+export type BotShape = "round" | "drop" | "peak";
+
+/** One bot in the web workspace: a named teammate with a job, its own memory and conversation. */
+export const webBots = pgTable(
+  "web_bots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** What the bot is for, in the user's words. Becomes part of its system prompt. */
+    role: text("role").notNull().default(""),
+    color: text("color").$type<BotColor>().notNull().default("teal"),
+    shape: text("shape").$type<BotShape>().notNull().default("round"),
+    /** Preset this bot was made from, for the gallery. Null for a custom bot. */
+    preset: text("preset"),
+    modelMode: text("model_mode").$type<"auto" | "economy" | "quality" | "pinned">().notNull().default("auto"),
+    modelId: text("model_id"),
+    maxPerMessageMicro: micro("max_per_message_micro").notNull().default(sql`3000000`),
+    maxPerDayMicro: micro("max_per_day_micro").notNull().default(sql`50000000`),
+    /** The note the bot keeps about the user and the work. */
+    memory: text("memory").notNull().default(""),
+    /** Recent turns as model messages, the bot's working context. */
+    transcript: jsonb("transcript").$type<Array<{ role: "user" | "assistant"; content: string }>>().notNull().default([]),
+    /** Set while a reply is being produced, so every open tab shows the bot typing. */
+    busySince: timestamp("busy_since", { withTimezone: true }),
+    /** When the alert watcher last looked at this bot's events, so each event fires once. */
+    lastWatchAt: timestamp("last_watch_at", { withTimezone: true }),
+    lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("web_bots_user_idx").on(table.userId, table.lastMessageAt)],
+);
+
+export type WebBotMessageRole = "user" | "bot" | "event";
+export type WebBotMessageKind = "text" | "tool" | "memory" | "action" | "error" | "budget" | "alert";
+
+/** Everything shown in a bot's thread: the user's messages, the bot's replies and the events between them. */
+export const webBotMessages = pgTable(
+  "web_bot_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    botId: uuid("bot_id")
+      .notNull()
+      .references(() => webBots.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role").$type<WebBotMessageRole>().notNull(),
+    kind: text("kind").$type<WebBotMessageKind>().notNull().default("text"),
+    content: text("content").notNull(),
+    /** Tool name, status, action id, model and so on, depending on the kind. */
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+    creditsMicro: micro("credits_micro").notNull().default(sql`0`),
+    createdAt: createdAt(),
+  },
+  (table) => [index("web_bot_messages_bot_idx").on(table.botId, table.createdAt)],
+);
+
+/** An alert a web bot keeps for its user: a price threshold (fires once) or a standing event watch. */
+export const webBotWatches = pgTable(
+  "web_bot_watches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    botId: uuid("bot_id")
+      .notNull()
+      .references(() => webBots.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<BotWatchKind>().notNull(),
+    /** Price watches on Robinhood Chain tokens. */
+    assetAddress: text("asset_address"),
+    assetSymbol: text("asset_symbol"),
+    /** Price watches on coins outside the chain, by CoinGecko id. */
+    coingeckoId: text("coingecko_id"),
+    thresholdUsd: doublePrecision("threshold_usd"),
+    agentId: uuid("agent_id"),
+    status: text("status").$type<BotWatchStatus>().notNull().default("active"),
+    firedCount: integer("fired_count").notNull().default(0),
+    lastFiredAt: timestamp("last_fired_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [index("web_bot_watches_bot_idx").on(table.botId, table.status)],
+);
+
+export type WebBotActionStatus = "pending" | "confirmed" | "cancelled" | "expired";
+
+/** A write tool the bot asked for, waiting for the user's Confirm in the thread. */
+export const webBotActions = pgTable(
+  "web_bot_actions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    botId: uuid("bot_id")
+      .notNull()
+      .references(() => webBots.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tool: text("tool").notNull(),
+    args: jsonb("args").$type<Record<string, unknown>>().notNull().default({}),
+    title: text("title").notNull(),
+    status: text("status").$type<WebBotActionStatus>().notNull().default("pending"),
+    /** The thread message carrying the buttons. */
+    messageId: uuid("message_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [index("web_bot_actions_bot_idx").on(table.botId, table.status)],
+);
+
 export type User = typeof users.$inferSelect;
 export type Connection = typeof connections.$inferSelect;
 export type Automation = typeof automations.$inferSelect;
 export type Run = typeof runs.$inferSelect;
 export type RunStep = typeof runSteps.$inferSelect;
+export type TradingWallet = typeof tradingWallets.$inferSelect;
+export type TradingAutomation = typeof tradingAutomations.$inferSelect;
+export type RiskMandateRow = typeof riskMandates.$inferSelect;
+export type TradingStrategyRow = typeof tradingStrategies.$inferSelect;
+export type TradingRun = typeof tradingRuns.$inferSelect;
+export type TradeProposal = typeof tradeProposals.$inferSelect;
+export type RiskEvaluation = typeof riskEvaluations.$inferSelect;
+export type Position = typeof positions.$inferSelect;
+export type Execution = typeof executions.$inferSelect;
+export type AuditEvent = typeof auditEvents.$inferSelect;
+export type BotChat = typeof botChats.$inferSelect;
+export type BotAction = typeof botActions.$inferSelect;
+export type BotWatch = typeof botWatches.$inferSelect;
+export type WebBot = typeof webBots.$inferSelect;
+export type WebBotMessage = typeof webBotMessages.$inferSelect;
+export type WebBotAction = typeof webBotActions.$inferSelect;
+export type WebBotWatch = typeof webBotWatches.$inferSelect;
