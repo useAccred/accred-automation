@@ -16,7 +16,8 @@ import { topAssets } from "../trading/market-data";
 import { agentDashboard, listPositions, listTradingAgents, listTrades } from "../trading/queries";
 import { loadAgent, type LoadedAgent } from "../trading/store";
 import type { ConnectionKind } from "../connections/kinds";
-import { telegramTarget } from "./notify";
+import { sendTelegram, telegramChats, telegramTarget } from "./notify";
+import { createTelegramLink, sharedBotConfigured } from "../telegram";
 import { PriceError, formatQuote, quote, resolveAsset } from "./prices";
 import { WatchError, agentNames, createWatch, describeWatch, listWatches, parseWatch, removeWatch } from "./watches";
 
@@ -365,6 +366,51 @@ const tradingRunNow = control("trading.run_now", "Start one cycle of a running a
   return `Cycle ${result.status}: ${result.summary}`;
 });
 
+// ── Telegram: link an account and message it ────────────────────────────────
+
+const telegramConnect = define({
+  name: "telegram.connect",
+  summary:
+    "Link the user's Telegram account so this bot can message it and send alerts there. Returns a one-tap link the user opens from the Telegram account they want (for example @name); pressing Start in the bot links it. Also lists the accounts already linked.",
+  argsHint: '{"account"?: string (the @handle the user named, for the instructions)}',
+  schema: z.object({ account: z.string().max(64).optional() }),
+  effect: "internal",
+  title: (args) => `Link Telegram${args.account ? ` ${args.account}` : ""}`,
+  async run(args, context) {
+    const { user } = context as BotToolContext;
+    const chats = await telegramChats(user.id);
+    const linked = chats.length ? `Already linked: ${chats.map((chat) => chat.label).join(", ")}.` : "No Telegram account is linked yet.";
+    if (!sharedBotConfigured()) return `${linked} The Telegram bot is not configured on this server, so a new account cannot be linked here; use ${env.appUrl}/app/connections.`;
+    const who = args.account ? args.account.replace(/^@?/, "@") : "the account you want me to message";
+    const link = await createTelegramLink(user.id);
+    return `${linked}\nTo link ${who}: open this link from that Telegram account and press Start (valid for 15 minutes): ${link}\nAfter that, I can message ${who} directly and send alerts there. Tell me when you have pressed Start.`;
+  },
+});
+
+const telegramSend = define({
+  name: "telegram.send_message",
+  summary: "Send a plain-text message to the user's linked Telegram account now (max 4,000 characters). Name the account when the user did; otherwise the first linked one is used. Needs confirmation. If no account is linked, call telegram.connect first.",
+  argsHint: '{"text": string, "account"?: string (@handle)}',
+  schema: z.object({ text: z.string().min(1).max(12_000), account: z.string().max(64).optional() }),
+  effect: "write",
+  title: (args) => `Send Telegram message${args.account ? ` to ${args.account.replace(/^@?/, "@")}` : ""}: "${args.text.replace(/\s+/g, " ").slice(0, 80)}${args.text.length > 80 ? "…" : ""}"`,
+  async run(args, context) {
+    const { user } = context as BotToolContext;
+    const target = await telegramTarget(user.id, args.account);
+    if (!target) {
+      const chats = await telegramChats(user.id);
+      throw new ToolError(
+        args.account && chats.length
+          ? `${args.account} is not linked. Linked accounts: ${chats.map((chat) => chat.label).join(", ")}. Call telegram.connect to link it.`
+          : "No Telegram account is linked yet. Call telegram.connect to get the link for the user.",
+      );
+    }
+    const ok = await sendTelegram(target, args.text.slice(0, 4000));
+    if (!ok) throw new ToolError(`Telegram did not accept the message for ${target.label}. If that chat blocked the bot, link it again with telegram.connect.`);
+    return `Sent to ${target.label} on Telegram.`;
+  },
+});
+
 export const ACCOUNT_TOOLS: ToolDef[] = [
   accountBalance,
   automationsList,
@@ -382,6 +428,8 @@ export const ACCOUNT_TOOLS: ToolDef[] = [
   tradingResume,
   tradingCloseAll,
   tradingRunNow,
+  telegramConnect,
+  telegramSend,
 ];
 
 /** The tool set for one bot, given the connection kinds the user has linked. */

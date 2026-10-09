@@ -15,19 +15,49 @@ export interface Delivered {
   telegram: "sent" | "no_connection" | "failed";
 }
 
-/** The user's first Telegram chat, with the token that reaches it. */
-export async function telegramTarget(userId: string): Promise<{ chatId: string; token: string } | null> {
-  const rows = await db.select({ configEnc: connections.configEnc }).from(connections).where(and(eq(connections.userId, userId), eq(connections.kind, "telegram"))).orderBy(connections.createdAt);
+export interface TelegramChatLink {
+  id: string;
+  /** "@name" or a first name, as the Connections page shows it. */
+  label: string;
+  chatId: string;
+  token: string;
+}
+
+/** Every Telegram chat the user has linked, with the token that reaches each. */
+export async function telegramChats(userId: string): Promise<TelegramChatLink[]> {
+  const rows = await db
+    .select({ id: connections.id, display: connections.display, configEnc: connections.configEnc })
+    .from(connections)
+    .where(and(eq(connections.userId, userId), eq(connections.kind, "telegram")))
+    .orderBy(connections.createdAt);
+  const out: TelegramChatLink[] = [];
   for (const row of rows) {
     try {
       const config = JSON.parse(decrypt(row.configEnc)) as { chatId?: string; botToken?: string };
       const token = config.botToken ?? env.telegramBotToken;
-      if (config.chatId && token) return { chatId: config.chatId, token };
+      if (config.chatId && token) out.push({ id: row.id, label: row.display.chat ?? row.display.chatId ?? "Telegram", chatId: config.chatId, token });
     } catch {
       // An unreadable connection is skipped.
     }
   }
-  return null;
+  return out;
+}
+
+const handle = (value: string) => value.trim().replace(/^@/, "").toLowerCase();
+
+/**
+ * The chat to message: the one whose handle the user named, else the first.
+ * Null when the user named an account that is not linked, or has none.
+ */
+export async function telegramTarget(userId: string, account?: string | null): Promise<{ chatId: string; token: string; label: string } | null> {
+  const chats = await telegramChats(userId);
+  if (chats.length === 0) return null;
+  if (account) {
+    const wanted = handle(account);
+    const match = chats.find((chat) => handle(chat.label) === wanted);
+    return match ?? null;
+  }
+  return chats[0]!;
 }
 
 export async function sendTelegram(target: { chatId: string; token: string }, text: string): Promise<boolean> {
