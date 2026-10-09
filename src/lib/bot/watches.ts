@@ -135,7 +135,7 @@ export interface WatchDeps {
 
 export const defaultWatchDeps: WatchDeps = {
   chainPrices: async (addresses) => new Map([...(await fetchSnapshots(addresses, { fresh: true })).entries()].map(([address, snapshot]) => [address, snapshot.priceUsd])),
-  coinPrices: async (ids) => new Map([...(await coinPrices(ids)).entries()].map(([id, row]) => [id, row.priceUsd])),
+  coinPrices: async (ids) => new Map([...(await coinPrices(ids, { cheap: true })).entries()].map(([id, row]) => [id, row.priceUsd])),
   now: () => Date.now(),
 };
 

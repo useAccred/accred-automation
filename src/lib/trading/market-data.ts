@@ -238,23 +238,28 @@ interface Provider {
 /** Sources of token snapshots, in the order they are asked. Every one covers the same pools. */
 function providers(): Provider[] {
   const list: Provider[] = [];
-  // A keyed source first: its limit is the key's own, not shared with other tenants of the host.
   const pro = env.coingeckoProApiKey;
   const demo = env.coingeckoDemoApiKey;
-  if (pro || demo) {
-    list.push({
-      name: "CoinGecko",
-      url: (addresses) => `https://${pro ? "pro-api" : "api"}.coingecko.com/api/v3/onchain/networks/${NETWORK}/tokens/multi/${addresses.join(",")}?include=top_pools`,
-      headers: pro ? { "x-cg-pro-api-key": pro } : { "x-cg-demo-api-key": demo! },
-      parse: (body, at) => snapshotsFromGecko(body, at, "coingecko"),
-    });
-  }
+  const keyed: Provider | null =
+    pro || demo
+      ? {
+          name: "CoinGecko",
+          url: (addresses) => `https://${pro ? "pro-api" : "api"}.coingecko.com/api/v3/onchain/networks/${NETWORK}/tokens/multi/${addresses.join(",")}?include=top_pools`,
+          headers: pro ? { "x-cg-pro-api-key": pro } : { "x-cg-demo-api-key": demo! },
+          parse: (body, at) => snapshotsFromGecko(body, at, "coingecko"),
+        }
+      : null;
+  // A paid key first: its limit is the key's own, not shared with other tenants of the host.
+  if (keyed && pro) list.push(keyed);
   list.push(
     { name: "DexScreener", url: (addresses) => `${DEXSCREENER}/tokens/v1/${NETWORK}/${addresses.join(",")}`, parse: snapshotsFromPairs },
     // The same pairs from DexScreener's older endpoint, which is limited separately.
     { name: "DexScreener (latest)", url: (addresses) => `${DEXSCREENER}/latest/dex/tokens/${addresses.join(",")}`, parse: (body, at) => snapshotsFromPairs((body as { pairs?: unknown } | null)?.pairs, at) },
     { name: "GeckoTerminal", url: (addresses) => `${GECKOTERMINAL}/networks/${NETWORK}/tokens/multi/${addresses.join(",")}?include=top_pools`, parse: (body, at) => snapshotsFromGecko(body, at) },
   );
+  // A free Demo key allows 10,000 calls a month, which the position monitor alone would spend in days.
+  // It is the last resort, for when the free sources throttle this host.
+  if (keyed && !pro) list.push(keyed);
   return list;
 }
 

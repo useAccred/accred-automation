@@ -141,7 +141,7 @@ export async function exchangePrice(symbol: string): Promise<CoinRow | null> {
  * (it carries market cap); whatever it did not answer is filled from exchange
  * tickers, which need no key. Everything is cached for a minute.
  */
-export async function coinPrices(ids: string[]): Promise<Map<string, CoinRow>> {
+export async function coinPrices(ids: string[], options: { cheap?: boolean } = {}): Promise<Map<string, CoinRow>> {
   const out = new Map<string, CoinRow>();
   const now = Date.now();
   const wanted = [...new Set(ids)].filter((id) => {
@@ -153,9 +153,24 @@ export async function coinPrices(ids: string[]): Promise<Map<string, CoinRow>> {
     return true;
   });
   if (wanted.length === 0) return out;
+  // Background checks (the alert watcher) take the keyless exchanges first, so CoinGecko's monthly
+  // allowance stays for questions that need market cap or coins the exchanges do not list.
+  if (options.cheap) {
+    for (const id of wanted) {
+      const symbol = SYMBOL_BY_ID.get(id);
+      if (!symbol) continue;
+      const row = await exchangePrice(symbol);
+      if (row) out.set(id, row);
+    }
+  }
+  const missing = wanted.filter((id) => !out.has(id));
+  if (missing.length === 0) {
+    for (const id of wanted) cache.set(id, { at: now, row: out.get(id)! });
+    return out;
+  }
   try {
     const body = await gecko<Record<string, { usd?: number; usd_24h_change?: number; usd_market_cap?: number; usd_24h_vol?: number }>>(
-      `/simple/price?ids=${encodeURIComponent(wanted.join(","))}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`,
+      `/simple/price?ids=${encodeURIComponent(missing.join(","))}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`,
     );
     for (const [id, row] of Object.entries(body)) {
       if (typeof row.usd === "number") out.set(id, { priceUsd: row.usd, change24hPercent: row.usd_24h_change ?? null, marketCapUsd: row.usd_market_cap ?? null, volume24hUsd: row.usd_24h_vol ?? null });

@@ -601,16 +601,31 @@ describe("market data", () => {
       warn.mockRestore();
     });
 
-    it("asks a keyed CoinGecko source first when a key is set", async () => {
+    it("asks a Pro CoinGecko key first, and a Demo key only after the free sources", async () => {
       const token = `0x${"6".repeat(40)}`;
-      const calls: Array<{ url: string; key: string | null }> = [];
-      vi.stubEnv("COINGECKO_DEMO_API_KEY", "CG-test-key");
-      vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
-        calls.push({ url, key: new Headers(init?.headers).get("x-cg-demo-api-key") });
-        return reply(200, geckoReply(token, [geckoPool("robinhood_0xdeep", "900", token)]));
-      });
+      const calls: Array<{ host: string; pro: string | null; demo: string | null }> = [];
+      const answerGeckoOnly = async (url: string, init?: RequestInit) => {
+        const headers = new Headers(init?.headers);
+        calls.push({ host: new URL(url).host, pro: headers.get("x-cg-pro-api-key"), demo: headers.get("x-cg-demo-api-key") });
+        return url.includes("coingecko.com") ? reply(200, geckoReply(token, [geckoPool("robinhood_0xdeep", "900", token)])) : reply(429, {});
+      };
+      vi.stubEnv("COINGECKO_PRO_API_KEY", "CG-pro-key");
+      vi.stubGlobal("fetch", answerGeckoOnly);
       expect((await fetchSnapshots([token], { fresh: true })).get(token)).toMatchObject({ source: "coingecko" });
-      expect(calls).toEqual([{ url: expect.stringContaining("https://api.coingecko.com/api/v3/onchain/networks/robinhood/tokens/multi/"), key: "CG-test-key" }]);
+      expect(calls).toEqual([{ host: "pro-api.coingecko.com", pro: "CG-pro-key", demo: null }]);
+      vi.unstubAllEnvs();
+
+      calls.length = 0;
+      vi.stubEnv("COINGECKO_DEMO_API_KEY", "CG-test-key");
+      vi.stubGlobal("fetch", answerGeckoOnly);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      expect((await fetchSnapshots([`0x${"7".repeat(40)}`], { fresh: true })).size).toBe(0);
+      // Free sources that are resting from earlier tests may be skipped; what matters is that the Demo key is asked last.
+      const hosts = calls.map((call) => call.host);
+      expect(hosts.slice(0, -1).every((host) => host !== "api.coingecko.com")).toBe(true);
+      expect(hosts.slice(0, -1).length).toBeGreaterThan(0);
+      expect(calls[calls.length - 1]).toEqual({ host: "api.coingecko.com", pro: null, demo: "CG-test-key" });
+      warn.mockRestore();
       vi.unstubAllEnvs();
     });
   });
