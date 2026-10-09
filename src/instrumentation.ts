@@ -8,6 +8,9 @@ export async function register() {
   // Protective exits run on their own timer, with no model in the loop.
   const { startTradingMonitor } = await import("./lib/trading/monitor");
   startTradingMonitor();
+  // Alerts the web bots keep for their users: checked once a minute, no model in the loop.
+  const { startBotWatcher } = await import("./lib/bot/watches");
+  startBotWatcher();
   // The Telegram agent (accred-telegram-agent) polls the bot when it runs; then this app only sends.
   if (process.env.TELEGRAM_POLLING !== "off") {
     const { startTelegramPolling } = await import("./lib/telegram");

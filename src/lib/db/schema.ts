@@ -585,6 +585,8 @@ export const webBots = pgTable(
     transcript: jsonb("transcript").$type<Array<{ role: "user" | "assistant"; content: string }>>().notNull().default([]),
     /** Set while a reply is being produced, so every open tab shows the bot typing. */
     busySince: timestamp("busy_since", { withTimezone: true }),
+    /** When the alert watcher last looked at this bot's events, so each event fires once. */
+    lastWatchAt: timestamp("last_watch_at", { withTimezone: true }),
     lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -593,7 +595,7 @@ export const webBots = pgTable(
 );
 
 export type WebBotMessageRole = "user" | "bot" | "event";
-export type WebBotMessageKind = "text" | "tool" | "memory" | "action" | "error" | "budget";
+export type WebBotMessageKind = "text" | "tool" | "memory" | "action" | "error" | "budget" | "alert";
 
 /** Everything shown in a bot's thread: the user's messages, the bot's replies and the events between them. */
 export const webBotMessages = pgTable(
@@ -615,6 +617,33 @@ export const webBotMessages = pgTable(
     createdAt: createdAt(),
   },
   (table) => [index("web_bot_messages_bot_idx").on(table.botId, table.createdAt)],
+);
+
+/** An alert a web bot keeps for its user: a price threshold (fires once) or a standing event watch. */
+export const webBotWatches = pgTable(
+  "web_bot_watches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    botId: uuid("bot_id")
+      .notNull()
+      .references(() => webBots.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<BotWatchKind>().notNull(),
+    /** Price watches on Robinhood Chain tokens. */
+    assetAddress: text("asset_address"),
+    assetSymbol: text("asset_symbol"),
+    /** Price watches on coins outside the chain, by CoinGecko id. */
+    coingeckoId: text("coingecko_id"),
+    thresholdUsd: doublePrecision("threshold_usd"),
+    agentId: uuid("agent_id"),
+    status: text("status").$type<BotWatchStatus>().notNull().default("active"),
+    firedCount: integer("fired_count").notNull().default(0),
+    lastFiredAt: timestamp("last_fired_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [index("web_bot_watches_bot_idx").on(table.botId, table.status)],
 );
 
 export type WebBotActionStatus = "pending" | "confirmed" | "cancelled" | "expired";
@@ -663,3 +692,4 @@ export type BotWatch = typeof botWatches.$inferSelect;
 export type WebBot = typeof webBots.$inferSelect;
 export type WebBotMessage = typeof webBotMessages.$inferSelect;
 export type WebBotAction = typeof webBotActions.$inferSelect;
+export type WebBotWatch = typeof webBotWatches.$inferSelect;

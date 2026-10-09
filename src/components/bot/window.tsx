@@ -1,6 +1,6 @@
 "use client";
 
-import { Clock, Mic, Monitor, Plus, Search, Settings2, X } from "lucide-react";
+import { Bell, Mic, Monitor, Plus, Search, Settings2, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { MuseFace } from "@/components/muse";
 import type { BotColor, BotShape } from "@/lib/db/schema";
@@ -228,7 +228,7 @@ function Item({ item }: { item: ThreadItem }) {
 
 function EventRow({ item }: { item: Extract<ThreadItem, { type: "event" }> }) {
   if (item.action) return <ActionCard item={item} />;
-  const Icon = item.icon === "clock" ? Clock : item.icon === "memory" ? Settings2 : null;
+  const Icon = item.icon === "clock" ? Bell : item.icon === "memory" ? Settings2 : null;
   const [label, text] = item.label !== undefined ? [item.label, item.text] : item.text.includes(" · ") ? [item.text.split(" · ")[0]!, item.text.split(" · ").slice(1).join(" · ")] : [undefined, item.text];
   return (
     <span className="inline-flex max-w-[90%] items-center gap-2 py-1 text-[16px] text-white/45">

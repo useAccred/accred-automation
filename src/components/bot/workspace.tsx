@@ -91,6 +91,8 @@ function toThread(messages: ThreadMessage[]): ThreadItem[] {
         text: message.content,
         action: { id: String(message.meta.actionId ?? ""), status, detail: typeof message.meta.detail === "string" ? message.meta.detail : undefined, description: describeArgs(message.meta.args) },
       });
+    } else if (message.kind === "alert") {
+      items.push({ type: "event", id: message.id, icon: "clock", label: message.meta.via === "routine" ? "Routine" : "Alert", text: message.content.replace(/^Alert · /, "") });
     } else if (message.kind === "memory") {
       items.push({ type: "event", id: message.id, icon: "memory", label: "Saved to memory", text: message.content.replace(/^Save to memory\s*/i, "") });
     } else {
